@@ -5,14 +5,14 @@ Dưới đây là sơ đồ tổng quan về kiến trúc và luồng xử lý d
 ```mermaid
 flowchart TB
     subgraph INPUTS["1. ĐẦU VÀO (INPUTS)"]
+        Prompt["Text Prompt:<br/>'Describe the scene for a visually impaired user...'"]
         InFrame["Khung hình hiện tại (Input Frame)<br/>[1 Ảnh tĩnh]"]
         FrameSeq["Chuỗi 9 khung hình liên tiếp<br/>[Frame Queue]"]
-        Prompt["Text Prompt:<br/>'Describe the scene for a visually impaired user...'"]
     end
 
     subgraph VISUAL_BRANCH["2. NHÁNH THỊ GIÁC (VISUAL BRANCH)"]
         VE["Vision Encoder (ViT)<br/>Trích xuất 256 Visual Tokens"]
-        QF["Q-Former (BLIP-2 / InstructBLIP)<br/>32 Learnable Queries + Cross-Attention"]
+        QF["Q-Former (InstructBLIP)<br/>32 Learnable Queries + Instruction-Aware Cross-Attention"]
         VisTokens["Compressed Visual Tokens<br/>(Nén 8x: từ 256 còn 32 Tokens)"]
     end
 
@@ -58,5 +58,6 @@ flowchart TB
     TrajTokens --> ConcatHead
     ConcatHead --> ProjMLP
     ProjMLP --> LLM
+    Prompt --> QF
     Prompt --> LLM
     LLM --> Answer
