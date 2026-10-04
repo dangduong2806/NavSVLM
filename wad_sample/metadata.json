@@ -1,0 +1,52 @@
+{
+  "source_dataset": "minhdang0901/WAD_Images_All_Size",
+  "frame_folder": "QA20240918-youtube_short_99eb18bd22530f3b47620f85585b5c15_2m7s.frame",
+  "num_frames": 9,
+  "frames": [
+    {
+      "frame_id": 0,
+      "image_path": "images/00000000.jpg",
+      "original_tar_path": "QA20240918-youtube_short_99eb18bd22530f3b47620f85585b5c15_2m7s.frame/0.jpg"
+    },
+    {
+      "frame_id": 1,
+      "image_path": "images/00000001.jpg",
+      "original_tar_path": "QA20240918-youtube_short_99eb18bd22530f3b47620f85585b5c15_2m7s.frame/1.jpg"
+    },
+    {
+      "frame_id": 2,
+      "image_path": "images/00000002.jpg",
+      "original_tar_path": "QA20240918-youtube_short_99eb18bd22530f3b47620f85585b5c15_2m7s.frame/2.jpg"
+    },
+    {
+      "frame_id": 3,
+      "image_path": "images/00000003.jpg",
+      "original_tar_path": "QA20240918-youtube_short_99eb18bd22530f3b47620f85585b5c15_2m7s.frame/3.jpg"
+    },
+    {
+      "frame_id": 4,
+      "image_path": "images/00000004.jpg",
+      "original_tar_path": "QA20240918-youtube_short_99eb18bd22530f3b47620f85585b5c15_2m7s.frame/4.jpg"
+    },
+    {
+      "frame_id": 5,
+      "image_path": "images/00000005.jpg",
+      "original_tar_path": "QA20240918-youtube_short_99eb18bd22530f3b47620f85585b5c15_2m7s.frame/5.jpg"
+    },
+    {
+      "frame_id": 6,
+      "image_path": "images/00000006.jpg",
+      "original_tar_path": "QA20240918-youtube_short_99eb18bd22530f3b47620f85585b5c15_2m7s.frame/6.jpg"
+    },
+    {
+      "frame_id": 7,
+      "image_path": "images/00000007.jpg",
+      "original_tar_path": "QA20240918-youtube_short_99eb18bd22530f3b47620f85585b5c15_2m7s.frame/7.jpg"
+    },
+    {
+      "frame_id": 8,
+      "image_path": "images/00000008.jpg",
+      "original_tar_path": "QA20240918-youtube_short_99eb18bd22530f3b47620f85585b5c15_2m7s.frame/8.jpg"
+    }
+  ]
+}

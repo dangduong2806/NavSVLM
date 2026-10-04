@@ -1,0 +1,12 @@
+{
+  "workbench.colorTheme": "Quiet Light",
+  "workbench.colorCustomizations": {
+    "[Quiet Light]": {
+      "editor.background": "#F7F5F0",
+      "editorGutter.background": "#F7F5F0",
+      "sideBar.background": "#F2F0EA",
+      "activityBar.background": "#EEECE6",
+      "statusBar.background": "#E8E5DE"
+    }
+  }
+}
