@@ -1,0 +1,8 @@
+{
+  "enabled": true,
+  "fusion_mode": "concat",
+  "source_file": "json/results_botsort_top6_sorted.jsonl",
+  "num_objects": 6,
+  "qformer_token_count": 32,
+  "num_image_token": 38
+}

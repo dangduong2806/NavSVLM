@@ -1,0 +1,7 @@
+{
+  "enabled": true,
+  "source_model": "Salesforce/instructblip-flan-t5-xl",
+  "num_query_tokens": 32,
+  "prompt_aware": true,
+  "bridge_mode": "prompt_aware_preproj_mlp1"
+}
