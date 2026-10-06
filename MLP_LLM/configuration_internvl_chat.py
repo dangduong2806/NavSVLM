@@ -10,7 +10,7 @@ from transformers import AutoConfig, LlamaConfig, Qwen2Config
 from transformers.configuration_utils import PretrainedConfig
 from transformers.utils import logging
 
-from .configuration_intern_vit import InternVisionConfig
+from Vision_Encoder.configuration_intern_vit import InternVisionConfig
 
 from logutil import get_logger
 logger = get_logger()

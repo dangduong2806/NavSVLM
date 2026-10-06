@@ -1,0 +1,18 @@
+# Install a torch/torchvision pair suitable for your CPU or CUDA installation first.
+torch>=2.2
+torchvision>=0.17
+transformers==4.45.2
+tokenizers>=0.20,<0.21
+huggingface-hub>=0.25,<1.0
+safetensors>=0.4.5
+accelerate>=0.34,<2
+peft==0.13.2
+timm>=1.0,<2
+einops>=0.8
+ultralytics==8.3.203
+lap>=0.5.12
+numpy>=1.26,<2
+opencv-python>=4.8,<4.12
+Pillow>=10
+PyYAML>=6
+# Optional, for --load-in-4bit: bitsandbytes>=0.43.3

@@ -16,7 +16,7 @@ from transformers.modeling_utils import PreTrainedModel
 
 from .configuration_internvl_chat import InternVLChatConfig
 from .conversation import get_conv_template
-from .modeling_intern_vit import InternVisionModel
+from Vision_Encoder.modeling_intern_vit import InternVisionModel
 
 from logutil import get_logger
 logger = get_logger()

@@ -10,7 +10,7 @@ from safetensors.torch import load_file, save_file
 from huggingface_hub.utils import EntryNotFoundError
 from transformers import InstructBlipConfig, InstructBlipProcessor, InstructBlipQFormerModel
 from huggingface_hub import hf_hub_download
-from trajectory_branch import (
+from Tracking_Encoder.trajectory_branch import (
     attach_trajectory_branch,
     build_trajectory_features,
     build_trajectory_tokens_base,
