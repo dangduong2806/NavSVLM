@@ -19,7 +19,7 @@ from PIL import Image
 from safetensors import safe_open
 from safetensors.torch import load_file
 from torch import nn
-from transformers import AutoModel, AutoTokenizer
+from transformers import AutoModel, AutoTokenizer, GenerationConfig, GenerationMixin
 from peft import LoraConfig, PeftModel
 
 from logutil import init_logger
@@ -163,9 +163,31 @@ def load_lora_config():
     )
 
 
+def enable_internlm_generation(language_model):
+    """Restore generation for legacy InternLM2 under newer Transformers."""
+    if not isinstance(language_model, GenerationMixin):
+        # New Transformers no longer supplies generate() through PreTrainedModel.
+        # Add it to this instance without reloading weights or editing cached code.
+        class InternLM2WithGeneration(type(language_model), GenerationMixin):
+            @classmethod
+            def _supports_default_dynamic_cache(cls):
+                # InternLM2's forward/prepare methods expect legacy tuple caches.
+                return False
+
+        language_model.__class__ = InternLM2WithGeneration
+    if language_model.generation_config is None:
+        language_model.generation_config = GenerationConfig.from_model_config(language_model.config)
+    return language_model
+
+
 def load_models():
     """Load the pretrained InternVL base, language adapter, and Q-Former bridge."""
     from Concat_Q_Former.qformer_bridge import _load_qformer_from_source
+
+    import torch
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(device)
 
     # AutoModel loads InternLM2 support from the official base repository.
     # The local demo's InternVLChatModel only implements Llama/Qwen2.
@@ -174,6 +196,8 @@ def load_models():
         low_cpu_mem_usage=True, use_flash_attn=False, cache_dir=str(CACHE_DIR),
     ).to(DEVICE).eval()
     tokenizer = AutoTokenizer.from_pretrained(str(CHECKPOINT), trust_remote_code=True, use_fast=False)
+    # Restore generation before PEFT captures the language model's methods.
+    model.language_model = enable_internlm_generation(model.language_model)
     model.language_model = PeftModel.from_pretrained(
         model.language_model, str(CHECKPOINT), config=load_lora_config(), is_trainable=False,
     ).eval()
