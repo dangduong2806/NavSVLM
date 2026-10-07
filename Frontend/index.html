@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f5f6f8">
+  <title>NavSVLM · Navigation demo</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <!-- <a class="skip-link" href="#workspace">Skip to demo</a> -->
+  <!-- <header class="topbar">
+    <a class="brand" href="/" aria-label="NavSVLM home"><span class="brand-icon" aria-hidden="true">↗</span>NavSVLM<span class="brand-divider"></span><span class="brand-caption">Navigation assistant</span></a>
+    <span class="demo-badge"><span class="dot"></span>Local demo</span>
+  </header> -->
+
+  <main id="workspace">
+    <!-- <div class="intro">
+      <div><p class="eyebrow">VISION + MOTION + LANGUAGE</p><h1>A clearer sense of what’s ahead.</h1><p class="subtitle">Turn a short scene into spoken navigation guidance.</p></div>
+      <span class="version">DEMO / 01</span>
+    </div> -->
+
+    <div class="workspace-grid">
+      <section class="card scene-card" aria-labelledby="scene-title">
+        <div class="card-heading"><div><span class="section-number">01</span><h2 id="scene-title">Scene input</h2></div><span class="subtle-tag"></span></div>
+        <div class="viewer">
+          <img id="scene-image" alt="Selected frame from the pedestrian street sample" hidden>
+          <div id="image-placeholder" class="image-placeholder">Loading sample frames…</div>
+          <div class="viewer-top"><span class="image-label">PEDESTRIAN WALKWAY</span><span id="frame-counter" class="frame-counter">— / —</span></div>
+          <div class="viewer-bottom"><div><span class="viewer-kicker">CURRENT VIEW</span><p id="frame-caption">Waiting for sample</p></div><button id="play-button" class="play-button" disabled aria-label="Play frame sequence">▶</button></div>
+        </div>
+        <div class="sequence-heading"><span>Frame sequence</span><span id="sequence-note">Loading…</span></div>
+        <div id="frame-strip" class="frame-strip" role="group" aria-label="Select a sample frame"></div>
+        <div class="scene-footer"><span class="folder-icon" aria-hidden="true">▧</span><span>wad_sample / images</span><span class="footer-note">Vision uses the final frame</span></div>
+      </section>
+
+      <section class="card guidance-card" aria-labelledby="guidance-title">
+        <div class="card-heading"><div><span class="section-number">02</span><h2 id="guidance-title">Navigation guidance</h2></div></div>
+        <div class="guidance-content">
+          <div class="status-line"><span id="status-badge" class="status-badge"><span class="dot"></span><span id="status-label">Connecting</span></span><span id="elapsed" class="elapsed"></span></div>
+          <div class="guidance-symbol" aria-hidden="true">...</div>
+          <div id="guidance-output" aria-live="polite" aria-atomic="true"><h3>Understand the scene.</h3><p>Generate guidance to hear about obstacles, a safe direction, and the next action to take.</p></div>
+          <p id="error-message" class="error-message" role="alert" hidden></p>
+          <div class="output-actions"><button id="speak-button" class="text-button" disabled><span aria-hidden="true">◖))</span> Read aloud</button><button id="copy-button" class="text-button" disabled>Copy text</button></div>
+          <p id="speech-message" class="error-message" role="status" hidden></p>
+        </div>
+        <div class="generate-area"><button id="generate-button" class="primary-button" disabled><span aria-hidden="true"></span><span id="generate-label">Generate guidance</span><span aria-hidden="true"></span></button><p id="run-hint">Guidance is read aloud automatically when ready.</p></div>
+      </section>
+    </div>
+
+    <!-- <section class="pipeline card" aria-labelledby="pipeline-title">
+      <div class="pipeline-intro"><p class="eyebrow">BEHIND THE GUIDANCE</p><h2 id="pipeline-title">One scene. Two perspectives.</h2><p>Visual context and object motion come together in language.</p></div>
+      <div class="pipeline-flow"><div class="pipeline-step"><span class="step-icon" aria-hidden="true">▧</span><h3>See the scene</h3><p>Final frame · vision encoder</p></div><span class="flow-arrow" aria-hidden="true">→</span><div class="pipeline-step"><span class="step-icon" aria-hidden="true">⌁</span><h3>Follow movement</h3><p>Frame sequence · object tracking</p></div><span class="flow-arrow" aria-hidden="true">→</span><div class="pipeline-step"><span class="step-icon" aria-hidden="true">≋</span><h3>Give guidance</h3><p>Combined context · language model</p></div></div>
+    </section> -->
+
+    <details class="run-details"><summary><span>Run log</span><span id="log-summary">Pipeline output will appear here</span></summary><pre id="run-log" tabindex="0" aria-label="Pipeline output">No run started.</pre></details>
+    <footer class="page-footer"><span><span class="footer-brand">NavSVLM</span> · Scene-to-language demo</span><span>Sample-based preview · Generated guidance may be inaccurate.</span></footer>
+    <span id="announcement" class="sr-only" role="status"></span>
+  </main>
+</body>
+</html>
