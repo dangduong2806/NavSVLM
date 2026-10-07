@@ -3,3 +3,15 @@ __pycache__/
 *.pyc
 outputs/
 .model_cache/
+
+# Model checkpoints
+checkpoint/
+checkpoints/
+checkpoint-*/
+/intern-qformer-concat-1807-epoch3/
+
+# Local data
+data/
+dataset/
+datasets/
+/wad_sample/

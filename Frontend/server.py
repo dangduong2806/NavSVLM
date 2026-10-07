@@ -1,4 +1,4 @@
-"""Local demo launcher. Runs the existing main.py without importing or editing it."""
+"""Local demo launcher. Runs the existing pipeline in an isolated subprocess."""
 import argparse
 import json
 import os
@@ -9,12 +9,18 @@ import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 FRONTEND = Path(__file__).resolve().parent
 ROOT = FRONTEND.parent
 PIPELINE = ROOT / "main.py"
 IMAGES = ROOT / "wad_sample" / "images"
+SCENES = {
+    "wad_sample": IMAGES,
+    "wad_sample_2": (ROOT / "wad_sample_2" / "images"
+                     if (ROOT / "wad_sample_2" / "images").is_dir()
+                     else ROOT / "wad_sample" / "wad_sample_2" / "images"),
+}
 ASSETS = {"/": ("index.html", "text/html"), "/styles.css": ("styles.css", "text/css"),
           "/app.js": ("app.js", "text/javascript")}
 
@@ -29,9 +35,16 @@ class DemoHTTPServer(ThreadingHTTPServer):
         super().server_bind()
 
 
-def sample_frames():
+def sample_frames(scene_id="wad_sample"):
     # Match the unchanged backend's ordering and nine-frame limit.
-    return sorted(IMAGES.glob("*.jpg"))[:9]
+    return sorted(SCENES[scene_id].glob("*.jpg"))[:9]
+
+
+def scene_description(scene_id, index):
+    return {"id": scene_id, "title": f"Scene {index + 1}",
+            "folder": SCENES[scene_id].relative_to(ROOT).as_posix(),
+            "frames": [{"name": frame.name, "url": f"/frames/{scene_id}/{number}"}
+                       for number, frame in enumerate(sample_frames(scene_id))]}
 
 
 class Runner:
@@ -45,24 +58,30 @@ class Runner:
         self.answer = ""
         self.error = ""
         self.logs = []
+        self.scene_id = None
 
     def snapshot(self):
         with self.lock:
             return {"status": self.status, "answer": self.answer, "error": self.error,
+                    "scene_id": self.scene_id,
                     "logs": list(self.logs), "elapsed": round(
                         (self.finished or time.monotonic()) - self.started, 1
                     ) if self.started is not None else 0}
 
-    def start(self):
+    def start(self, scene_id="wad_sample"):
+        if scene_id not in SCENES:
+            raise ValueError("Unknown sample scene.")
         with self.lock:
             if self.status == "running":
                 return False
             self.status, self.answer, self.error = "running", "", ""
             self.logs = []
+            self.scene_id = scene_id
             self.started, self.finished = time.monotonic(), None
             try:
                 self.process = subprocess.Popen(
-                    [sys.executable, "-u", str(PIPELINE)], cwd=str(ROOT),
+                    [sys.executable, "-u", str(FRONTEND / "run_pipeline.py"),
+                     "--pipeline", str(PIPELINE), "--images-dir", str(SCENES[scene_id])], cwd=str(ROOT),
                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                     text=True, encoding="utf-8", errors="replace",
                     env={**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUNBUFFERED": "1",
@@ -143,19 +162,22 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(403, {"error": "Local access only."})
         path = urlsplit(self.path).path
         if path == "/api/session":
-            frames = sample_frames()
-            return self._send(200, {"frames": [
-                {"name": frame.name, "url": f"/frames/{index}"}
-                for index, frame in enumerate(frames)
-            ]})
+            scenes = [scene_description(scene_id, index) for index, scene_id in enumerate(SCENES)]
+            return self._send(200, {"scenes": scenes, "frames": scenes[0]["frames"]})
         if path == "/api/status":
             return self._send(200, self.server.runner.snapshot())
         if path in ASSETS:
             filename, mime = ASSETS[path]
             return self._send(200, (FRONTEND / filename).read_bytes(), mime)
         if path.startswith("/frames/"):
-            index = path.removeprefix("/frames/")
-            frames = sample_frames()
+            parts = path.removeprefix("/frames/").split("/")
+            if len(parts) == 1:
+                scene_id, index = "wad_sample", parts[0]
+            elif len(parts) == 2 and parts[0] in SCENES:
+                scene_id, index = parts
+            else:
+                return self._send(404, {"error": "Not found."})
+            frames = sample_frames(scene_id)
             if index.isdigit() and len(index) <= 2 and int(index) < len(frames):
                 return self._send(200, frames[int(index)].read_bytes(), "image/jpeg")
         self._send(404, {"error": "Not found."})
@@ -165,9 +187,12 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(403, {"error": "Open the demo from its local address to run the pipeline."})
         if urlsplit(self.path).path != "/api/run":
             return self._send(404, {"error": "Not found."})
-        if not sample_frames():
-            return self._send(400, {"error": "No sample JPG frames found in wad_sample/images."})
-        if not self.server.runner.start():
+        scene_id = parse_qs(urlsplit(self.path).query).get("scene", ["wad_sample"])[0]
+        if scene_id not in SCENES:
+            return self._send(400, {"error": "Unknown sample scene."})
+        if not sample_frames(scene_id):
+            return self._send(400, {"error": f"No sample JPG frames found for {scene_id}."})
+        if not self.server.runner.start(scene_id):
             return self._send(409, {"error": "A run is already in progress."})
         self._send(202, self.server.runner.snapshot())
 

@@ -33,23 +33,33 @@ after changing modes. Offline mode cannot supply missing model files.
 
 ## Try the demo
 
-1. Browse the sample thumbnails or press play to preview the nine-frame sequence.
-2. Click **Generate guidance** to execute the existing `main.py` with the same
-   Python interpreter as the launcher, from the repository root.
+1. Use the **left/right arrows** beside Scene input to switch between sequences.
+   Browse the thumbnails or press play to preview the selected nine-frame sequence.
+   Each press of Play starts from the first frame and repeats the sequence five
+   times, then stops on the final frame. Press Pause to stop playback early.
+2. Click **Generate guidance** to run the existing pipeline on the selected scene
+   with the same Python interpreter as the launcher, from the repository root.
 3. Guidance is automatically read aloud when a run finishes. Use **Stop reading**
    to stop the voice, **Read aloud** to replay it, or **Copy text**. Expand
    **Run log** for model output and errors. Refreshing a completed result does not
    replay it. If your browser blocks automatic playback, select **Read aloud**.
 
-The preview uses the same first nine alphabetically sorted JPG files in
-`wad_sample/images` as the backend. Choosing a thumbnail only changes the preview;
-inference always uses the full sample sequence and its final frame. No upload,
+Scene 1 uses `wad_sample/images`. Scene 2 uses `wad_sample/wad_sample_2/images`
+(or `wad_sample_2/images` if the second sample is placed at the repository root).
+The preview and inference use the same first nine alphabetically sorted JPGs in
+the selected folder. Choosing a thumbnail only changes the preview; inference
+uses the selected sequence and its final frame. Scene switching stops playback
+and speech, and hides any guidance belonging to a different scene. Arrows are
+disabled during generation. No upload,
 camera capture, prompt editing, simulated predictions, or invented detection
 overlays are included in this first demo.
 
 The launcher serves only the frontend and the selected sample images on localhost.
-It starts a subprocess when requested and reads the existing `Generated text:`
-output. Model loading, dependencies, GPU selection, and cache writes remain the
+It starts `Frontend/run_pipeline.py` in a subprocess and reads the existing
+`Generated text:` output. This wrapper imports `main.py`, sets only its in-memory
+`IMAGES_DIR` to the selected scene, and calls `main()`. It never edits backend
+files, copies/replaces images, or changes the checkpoint. Running `python main.py`
+directly still uses the original scene. Model loading, dependencies, GPU selection, and cache writes remain the
 existing pipeline's behavior; Hugging Face downloads require `--online`.
 The first run can take several minutes;
 every run reloads models because `main.py` is a standalone script. Progress is

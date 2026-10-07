@@ -1,7 +1,11 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
+const PREVIEW_REPEATS = 9;
 let frames = [];
+let scenes = [];
+let selectedScene = 0;
+let latestStatus = null;
 let selectedFrame = 0;
 let playback = null;
 let answer = "";
@@ -21,7 +25,7 @@ async function request(path, options) {
 function selectFrame(index) {
   selectedFrame = index;
   $("scene-image").src = frames[index].url;
-  $("scene-image").alt = `Pedestrian walkway sample, frame ${index + 1} of ${frames.length}`;
+  $("scene-image").alt = `${scenes[selectedScene].title}, frame ${index + 1} of ${frames.length}`;
   $("scene-image").hidden = false;
   $("image-placeholder").hidden = true;
   $("frame-counter").textContent = `${String(index + 1).padStart(2, "0")} / ${String(frames.length).padStart(2, "0")}`;
@@ -34,6 +38,7 @@ function stopPlayback() {
   playback = null;
   $("play-button").textContent = "▶";
   $("play-button").setAttribute("aria-label", "Play frame sequence");
+  $("sequence-note").textContent = `${frames.length} frames · ${PREVIEW_REPEATS} repeats`;
 }
 
 function renderFrames() {
@@ -51,10 +56,35 @@ function renderFrames() {
     button.addEventListener("click", () => { stopPlayback(); selectFrame(index); });
     $("frame-strip").append(button);
   });
-  $("sequence-note").textContent = `${frames.length} frames · chronological order`;
+  $("sequence-note").textContent = `${frames.length} frames · ${PREVIEW_REPEATS} repeats`;
   $("play-button").disabled = frames.length < 2;
   if (frames.length) selectFrame(frames.length - 1);
-  else $("image-placeholder").textContent = "No JPG sample frames found in wad_sample/images.";
+  else {
+    $("scene-image").hidden = true;
+    $("scene-image").removeAttribute("src");
+    $("image-placeholder").hidden = false;
+    $("image-placeholder").textContent = "No JPG frames found for this scene.";
+    $("frame-counter").textContent = "00 / 00";
+    $("frame-caption").textContent = "No frames available";
+  }
+}
+
+function selectScene(index) {
+  stopPlayback();
+  stopSpeech();
+  selectedScene = index;
+  const scene = scenes[index];
+  frames = scene.frames;
+  $("scene-count").textContent = `${index + 1} / ${scenes.length}`;
+  $("scene-label").textContent = scene.title.toUpperCase();
+  $("scene-folder").textContent = scene.folder.replaceAll("/", " / ");
+  runStatus = "idle";
+  answer = "";
+  $("speech-message").hidden = true;
+  setOutput("Understand the scene.", "Generate guidance to hear about obstacles, a safe direction, and the next action to take.");
+  renderFrames();
+  if (latestStatus) showStatus(latestStatus);
+  syncButtons();
 }
 
 function setOutput(title, text, isAnswer = false) {
@@ -70,7 +100,11 @@ function setOutput(title, text, isAnswer = false) {
 }
 
 function syncButtons() {
-  $("generate-button").disabled = !connected || !frames.length || runStatus === "running" || submitting;
+  const busy = latestStatus?.status === "running" || submitting;
+  $("generate-button").disabled = !connected || !frames.length || busy;
+  $("previous-scene").disabled = !connected || busy || selectedScene <= 0;
+  $("next-scene").disabled = !connected || busy || selectedScene >= scenes.length - 1;
+  $("previous-scene").title = $("next-scene").title = busy ? "Wait for generation to finish before switching scenes." : "";
   $("speak-button").disabled = !answer || !("speechSynthesis" in window);
   $("copy-button").disabled = !answer;
 }
@@ -118,6 +152,11 @@ function readGuidance() {
 }
 
 function showStatus(data) {
+  latestStatus = data;
+  // A result belongs only to the sequence that produced it.
+  if (data.scene_id !== scenes[selectedScene]?.id) {
+    data = { status: "idle", answer: "", error: "", logs: [], elapsed: 0 };
+  }
   // Speak each completed run once, including repeat runs with identical text.
   // A page refresh showing an old result should not replay it.
   const justCompleted = runStatus === "running" && data.status === "complete";
@@ -150,12 +189,18 @@ async function poll() {
     // Reload session data on reconnect, including after the launcher restarts.
     if (!connected) {
       const session = await request("/api/session");
-      frames = session.frames;
-      renderFrames();
+      const selectedId = scenes[selectedScene]?.id;
+      const firstConnection = scenes.length === 0;
+      scenes = session.scenes;
+      latestStatus = await request("/api/status");
+      const desiredId = firstConnection ? latestStatus.scene_id : selectedId;
+      selectedScene = Math.max(0, scenes.findIndex((scene) => scene.id === desiredId));
+      connected = true;
+      selectScene(selectedScene);
+    } else {
+      const data = await request("/api/status");
+      showStatus(data);
     }
-    const data = await request("/api/status");
-    connected = true;
-    showStatus(data);
   } catch (error) {
     connected = false;
     $("status-label").textContent = "Disconnected";
@@ -170,15 +215,26 @@ async function poll() {
 
 $("play-button").addEventListener("click", () => {
   if (playback) return stopPlayback();
-  if (selectedFrame === frames.length - 1) selectFrame(0);
+  if (frames.length < 2) return;
+  let completedLoops = 0;
+  selectFrame(0);
+  $("sequence-note").textContent = `${frames.length} frames · Repeat 1 / ${PREVIEW_REPEATS}`;
   $("play-button").textContent = "Ⅱ";
   $("play-button").setAttribute("aria-label", "Pause frame sequence");
   playback = window.setInterval(() => {
-    if (selectedFrame >= frames.length - 1) return stopPlayback();
-    selectFrame(selectedFrame + 1);
-    if (selectedFrame === frames.length - 1) stopPlayback();
+    if (selectedFrame === frames.length - 1) {
+      completedLoops += 1;
+      if (completedLoops === PREVIEW_REPEATS) return stopPlayback();
+      selectFrame(0);
+      $("sequence-note").textContent = `${frames.length} frames · Repeat ${completedLoops + 1} / ${PREVIEW_REPEATS}`;
+    } else {
+      selectFrame(selectedFrame + 1);
+    }
   }, 450);
 });
+
+$("previous-scene").addEventListener("click", () => selectScene(selectedScene - 1));
+$("next-scene").addEventListener("click", () => selectScene(selectedScene + 1));
 
 $("generate-button").addEventListener("click", async () => {
   submitting = true;
@@ -187,7 +243,7 @@ $("generate-button").addEventListener("click", async () => {
   stopPlayback();
   selectFrame(frames.length - 1);
   try {
-    showStatus(await request("/api/run", { method: "POST" }));
+    showStatus(await request(`/api/run?scene=${encodeURIComponent(scenes[selectedScene].id)}`, { method: "POST" }));
   } catch (error) {
     $("error-message").hidden = false;
     $("error-message").textContent = error.message;

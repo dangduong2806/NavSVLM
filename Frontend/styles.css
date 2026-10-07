@@ -1,7 +1,7 @@
 :root {
   font-family:Inter,"Segoe UI",Arial,sans-serif;
   color:#232b3d;
-  background:#f5f6f8;
+  background:#64b5f6;
   font-synthesis:none;
   --muted:#737c8e;
   --border:#e5e8ef;
@@ -170,6 +170,11 @@ h1 {
   overflow:hidden;
 }
 
+.scene-card,
+.guidance-card {
+  background:#e8f4fd;
+}
+
 .card-heading {
   height:72px;
   padding:0 24px;
@@ -183,6 +188,30 @@ h1 {
   display:flex;
   align-items:center;
   gap:11px;
+}
+
+.card-heading .scene-navigation {
+  gap:8px;
+  flex-shrink:0;
+  color:var(--muted);
+  font-size:11px;
+}
+
+.scene-arrow {
+  display:grid;
+  place-items:center;
+  width:32px;
+  height:32px;
+  border:1px solid var(--border);
+  border-radius:8px;
+  background:#f5f3ff;
+  color:var(--purple);
+  font-size:19px;
+}
+
+#scene-folder {
+  min-width:0;
+  overflow-wrap:anywhere;
 }
 
 h2 {
@@ -665,12 +694,12 @@ h3 {
   justify-content:space-between;
   gap:20px;
   font-size:9px;
-  color:#969dac;
+  color:#173b63;
   margin-top:28px;
 }
 
 .footer-brand {
-  color:#798294;
+  color:#12304f;
   font-weight:600;
 }
 

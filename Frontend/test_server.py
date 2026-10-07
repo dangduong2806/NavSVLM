@@ -3,6 +3,7 @@ import http.client
 import json
 from pathlib import Path
 import tempfile
+import textwrap
 import threading
 import time
 import unittest
@@ -39,6 +40,9 @@ class DemoTests(unittest.TestCase):
         code, body = response.status, response.read()
         connection.close()
         return code, body
+
+    def write_pipeline(self, code, encoding="utf-8"):
+        self.pipeline.write_text("def main():\n" + textwrap.indent(code, "    "), encoding=encoding)
 
     def wait_for_result(self):
         deadline = time.monotonic() + 5
@@ -77,7 +81,7 @@ class DemoTests(unittest.TestCase):
             duplicate.server_close()
 
     def test_success_multiline_output_and_duplicate_run(self):
-        self.pipeline.write_text("import time\nprint('Loading...')\ntime.sleep(0.5)\nprint('Generated text: Pause here.')\nprint('A pedestrian is ahead.')\n", encoding="utf-8")
+        self.write_pipeline("import time\nprint('Loading...')\ntime.sleep(0.5)\nprint('Generated text: Pause here.')\nprint('A pedestrian is ahead.')\n", encoding="utf-8")
         self.assertEqual(self.request("/api/run", "POST", {"Origin": self.origin})[0], 202)
         self.assertEqual(self.request("/api/run", "POST", {"Origin": self.origin})[0], 409)
         result = self.wait_for_result()
@@ -87,18 +91,18 @@ class DemoTests(unittest.TestCase):
         self.assertEqual(json.loads(self.request("/api/status")[1])["answer"], result["answer"])
 
     def test_nonzero_exit_and_retry(self):
-        self.pipeline.write_text("raise RuntimeError('test failure')\n", encoding="utf-8")
+        self.write_pipeline("raise RuntimeError('test failure')\n", encoding="utf-8")
         self.runner.start()
         result = self.wait_for_result()
         self.assertEqual(result["status"], "error")
         self.assertIn("code 1", result["error"])
         self.assertTrue(any("test failure" in line for line in result["logs"]))
-        self.pipeline.write_text("print('Generated text: Retry succeeded.')\n", encoding="utf-8")
+        self.write_pipeline("print('Generated text: Retry succeeded.')\n", encoding="utf-8")
         self.runner.start()
         self.assertEqual(self.wait_for_result()["answer"], "Retry succeeded.")
 
     def test_missing_output_is_not_success(self):
-        self.pipeline.write_text("print('No guidance emitted')\n", encoding="utf-8")
+        self.write_pipeline("print('No guidance emitted')\n", encoding="utf-8")
         self.runner.start()
         result = self.wait_for_result()
         self.assertEqual(result["status"], "error")
@@ -110,7 +114,7 @@ class DemoTests(unittest.TestCase):
         self.assertEqual(self.runner.snapshot()["status"], "idle")
 
     def test_offline_flags_reach_child_and_online_overrides_them(self):
-        self.pipeline.write_text(
+        self.write_pipeline(
             "import os\nprint('Generated text:', os.environ['HF_HUB_OFFLINE'], os.environ['TRANSFORMERS_OFFLINE'])\n",
             encoding="utf-8",
         )
@@ -120,6 +124,38 @@ class DemoTests(unittest.TestCase):
                 with patch.dict(server.os.environ, {"HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1"}):
                     self.runner.start()
                 self.assertEqual(self.wait_for_result()["answer"], expected)
+
+    def test_second_scene_frames_are_distinct(self):
+        scenes = json.loads(self.request("/api/session")[1])["scenes"]
+        self.assertEqual([scene["id"] for scene in scenes], ["wad_sample", "wad_sample_2"])
+        for scene in scenes:
+            expected = server.sample_frames(scene["id"])
+            self.assertEqual(len(scene["frames"]), 9)
+            for frame, path in zip(scene["frames"], expected):
+                code, body = self.request(frame["url"])
+                self.assertEqual(code, 200)
+                self.assertEqual(body, path.read_bytes())
+        self.assertNotEqual(self.request(scenes[0]["frames"][-1]["url"])[1],
+                            self.request(scenes[1]["frames"][-1]["url"])[1])
+
+    def test_scene_selection_reaches_pipeline_without_changing_files(self):
+        self.write_pipeline("print('Generated text:', IMAGES_DIR)\n")
+        original = self.pipeline.read_bytes()
+        for scene_id, images_dir in server.SCENES.items():
+            with self.subTest(scene=scene_id):
+                code, _ = self.request(f"/api/run?scene={scene_id}", "POST", {"Origin": self.origin})
+                self.assertEqual(code, 202)
+                result = self.wait_for_result()
+                self.assertEqual(result["status"], "complete")
+                self.assertEqual(result["scene_id"], scene_id)
+                self.assertEqual(result["answer"], str(images_dir.resolve()))
+                self.assertEqual(self.pipeline.read_bytes(), original)
+
+    def test_unknown_scene_is_rejected(self):
+        for scene in ("unknown", "../main.py", "%2e%2e%2fmain.py"):
+            self.assertEqual(self.request(f"/api/run?scene={scene}", "POST", {"Origin": self.origin})[0], 400)
+        self.assertEqual(self.request("/frames/unknown/0")[0], 404)
+        self.assertEqual(self.runner.snapshot()["status"], "idle")
 
 
 if __name__ == "__main__":
