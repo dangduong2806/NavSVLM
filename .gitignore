@@ -1,0 +1,11 @@
+.venv-navvlm/
+.model_cache/
+.archive/
+__pycache__/
+*.pyc
+qformer_cache/
+tmp/hf_modules/
+.pt
+.safetensors/
+.bin
+intern-qformer-concat-1807-epoch3/

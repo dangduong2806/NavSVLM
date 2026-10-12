@@ -1,0 +1,52 @@
+{
+  "source_dataset": "minhdang0901/WAD_Images_All_Size",
+  "frame_folder": "20240918-youtube_short_77f91b8639adebd22a8b3c6af9de5a07_4min47s.frame",
+  "num_frames": 9,
+  "frames": [
+    {
+      "frame_id": 0,
+      "image_path": "images/00000000.jpg",
+      "original_tar_path": "20240918-youtube_short_77f91b8639adebd22a8b3c6af9de5a07_4min47s.frame/0.jpg"
+    },
+    {
+      "frame_id": 1,
+      "image_path": "images/00000001.jpg",
+      "original_tar_path": "20240918-youtube_short_77f91b8639adebd22a8b3c6af9de5a07_4min47s.frame/1.jpg"
+    },
+    {
+      "frame_id": 2,
+      "image_path": "images/00000002.jpg",
+      "original_tar_path": "20240918-youtube_short_77f91b8639adebd22a8b3c6af9de5a07_4min47s.frame/2.jpg"
+    },
+    {
+      "frame_id": 3,
+      "image_path": "images/00000003.jpg",
+      "original_tar_path": "20240918-youtube_short_77f91b8639adebd22a8b3c6af9de5a07_4min47s.frame/3.jpg"
+    },
+    {
+      "frame_id": 4,
+      "image_path": "images/00000004.jpg",
+      "original_tar_path": "20240918-youtube_short_77f91b8639adebd22a8b3c6af9de5a07_4min47s.frame/4.jpg"
+    },
+    {
+      "frame_id": 5,
+      "image_path": "images/00000005.jpg",
+      "original_tar_path": "20240918-youtube_short_77f91b8639adebd22a8b3c6af9de5a07_4min47s.frame/5.jpg"
+    },
+    {
+      "frame_id": 6,
+      "image_path": "images/00000006.jpg",
+      "original_tar_path": "20240918-youtube_short_77f91b8639adebd22a8b3c6af9de5a07_4min47s.frame/6.jpg"
+    },
+    {
+      "frame_id": 7,
+      "image_path": "images/00000007.jpg",
+      "original_tar_path": "20240918-youtube_short_77f91b8639adebd22a8b3c6af9de5a07_4min47s.frame/7.jpg"
+    },
+    {
+      "frame_id": 8,
+      "image_path": "images/00000008.jpg",
+      "original_tar_path": "20240918-youtube_short_77f91b8639adebd22a8b3c6af9de5a07_4min47s.frame/8.jpg"
+    }
+  ]
+}

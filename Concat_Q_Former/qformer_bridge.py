@@ -10,7 +10,7 @@ from safetensors.torch import load_file, save_file
 from huggingface_hub.utils import EntryNotFoundError
 from transformers import InstructBlipConfig, InstructBlipProcessor, InstructBlipQFormerModel
 from huggingface_hub import hf_hub_download
-from trajectory_branch import (
+from Tracking_Encoder.trajectory_branch import (
     attach_trajectory_branch,
     build_trajectory_features,
     build_trajectory_tokens_base,
@@ -47,11 +47,20 @@ def _module_dtype(module: nn.Module) -> torch.dtype:
     return next(module.parameters()).dtype
 
 
-def _download_qformer_state(source_model: str, cache_dir: str) -> Dict[str, torch.Tensor]:
+def _download_qformer_state(source_model: str, cache_dir: str, *, revision=None, local_files_only=False) -> Dict[str, torch.Tensor]:
+    def resolve(*, repo_id, filename, cache_dir):
+        if Path(repo_id).is_dir():
+            path = Path(repo_id) / filename
+            if not path.is_file():
+                raise EntryNotFoundError(f"Missing local Q-Former artifact: {path}")
+            return str(path)
+        return hf_hub_download(repo_id=repo_id, filename=filename, cache_dir=cache_dir,
+                               revision=revision, local_files_only=local_files_only)
+
     use_safetensors = True
     single_file = None
     try:
-        index_path = hf_hub_download(
+        index_path = resolve(
             repo_id=source_model,
             filename="model.safetensors.index.json",
             cache_dir=cache_dir,
@@ -59,21 +68,21 @@ def _download_qformer_state(source_model: str, cache_dir: str) -> Dict[str, torc
     except EntryNotFoundError:
         use_safetensors = False
         try:
-            index_path = hf_hub_download(
+            index_path = resolve(
                 repo_id=source_model,
                 filename="pytorch_model.bin.index.json",
                 cache_dir=cache_dir,
             )
         except EntryNotFoundError:
             try:
-                single_file = hf_hub_download(
+                single_file = resolve(
                     repo_id=source_model,
                     filename="model.safetensors",
                     cache_dir=cache_dir,
                 )
                 use_safetensors = True
             except EntryNotFoundError:
-                single_file = hf_hub_download(
+                single_file = resolve(
                     repo_id=source_model,
                     filename="pytorch_model.bin",
                     cache_dir=cache_dir,
@@ -104,7 +113,7 @@ def _download_qformer_state(source_model: str, cache_dir: str) -> Dict[str, torc
 
     qformer_state = {}
     for shard_name in shard_names:
-        shard_path = hf_hub_download(
+        shard_path = resolve(
             repo_id=source_model,
             filename=shard_name,
             cache_dir=cache_dir,
@@ -116,8 +125,9 @@ def _download_qformer_state(source_model: str, cache_dir: str) -> Dict[str, torc
     return qformer_state
 
 
-def _load_qformer_from_source(source_model: str, cache_dir: str):
-    blip_config = InstructBlipConfig.from_pretrained(source_model, cache_dir=cache_dir)
+def _load_qformer_from_source(source_model: str, cache_dir: str, *, revision=None, local_files_only=False):
+    options = dict(cache_dir=cache_dir, revision=revision, local_files_only=local_files_only)
+    blip_config = InstructBlipConfig.from_pretrained(source_model, **options)
     qformer = InstructBlipQFormerModel(blip_config.qformer_config)
     query_tokens = nn.Parameter(
         torch.zeros(
@@ -127,7 +137,7 @@ def _load_qformer_from_source(source_model: str, cache_dir: str):
         )
     )
 
-    state = _download_qformer_state(source_model, cache_dir)
+    state = _download_qformer_state(source_model, cache_dir, revision=revision, local_files_only=local_files_only)
     qformer_state = {
         name[len("qformer.") :]: tensor
         for name, tensor in state.items()
@@ -137,12 +147,14 @@ def _load_qformer_from_source(source_model: str, cache_dir: str):
     if unexpected:
         raise RuntimeError(f"Unexpected Q-Former keys: {unexpected[:5]}")
     if missing:
-        print(f"[QFormerBridge] Warning: missing Q-Former keys: {missing[:5]}")
+        raise RuntimeError(f"Missing Q-Former keys: {missing[:5]}")
     if "query_tokens" not in state:
         raise RuntimeError("query_tokens not found in Q-Former checkpoint.")
     query_tokens.data.copy_(state["query_tokens"])
 
-    processor = InstructBlipProcessor.from_pretrained(source_model, cache_dir=cache_dir)
+    # Keep the saved slow processor explicitly; Transformers otherwise warns
+    # that a future default may switch to the fast implementation.
+    processor = InstructBlipProcessor.from_pretrained(source_model, use_fast=False, **options)
     return qformer, query_tokens, processor.qformer_tokenizer, blip_config
 
 
@@ -369,6 +381,8 @@ def attach_qformer_bridge(model, config: Dict, logger=None):
     qformer, query_tokens, qformer_tokenizer, blip_config = _load_qformer_from_source(
         q_cfg["source_model"],
         q_cfg["cache_dir"],
+        revision=q_cfg.get("revision"),
+        local_files_only=q_cfg.get("local_files_only", False),
     )
 
     vit_hidden_size = model.config.vision_config.hidden_size

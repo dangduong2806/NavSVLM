@@ -32,5 +32,7 @@ def init_logger(log_dir="./"):
     _logger.addHandler(_console_handler)
 
 def get_logger():
-    assert _logger is not None, "Logger is not initialized. Please call init_logger() first."
-    return _logger
+    # Model modules obtain their logger at import time. Keep imports usable for
+    # inference without creating training log files; init_logger configures this
+    # same named logger later when a training run requests file handlers.
+    return _logger if _logger is not None else logging.getLogger('MyLogger')

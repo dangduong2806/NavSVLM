@@ -57,7 +57,7 @@ def build_trajectory_source_from_config(config: Dict):
     if not trajectory_enabled(config):
         return None
     traj_cfg = get_trajectory_config(config)
-    return TrajectorySource.from_file(str(traj_cfg["source_file"]))
+    return TrajectorySource.from_file(str(traj_cfg["source_file"]), vocabulary=traj_cfg.get("vocabulary"))
 
 
 def resolve_trajectory_source_path(source_file: str) -> str:
@@ -152,7 +152,7 @@ class TrajectorySource:
     numeric_dim: int = TRAJECTORY_NUMERIC_DIM
 
     @classmethod
-    def from_file(cls, source_file: str):
+    def from_file(cls, source_file: str, *, vocabulary=None):
         resolved_path = resolve_trajectory_source_path(source_file)
         if not os.path.exists(resolved_path):
             raise FileNotFoundError(
@@ -218,6 +218,17 @@ class TrajectorySource:
         direction_to_id = {TRAJECTORY_PAD_UNK_LABEL: TRAJECTORY_PAD_UNK_ID}
         for offset, direction in enumerate(sorted(directions), start=1):
             direction_to_id[direction] = offset
+
+        if vocabulary is not None:
+            label_to_id = dict(vocabulary["label_to_id"])
+            direction_to_id = dict(vocabulary["direction_to_id"])
+            for name, mapping in (("label", label_to_id), ("direction", direction_to_id)):
+                if mapping.get(TRAJECTORY_PAD_UNK_LABEL) != TRAJECTORY_PAD_UNK_ID:
+                    raise ValueError(f"{name} vocabulary must reserve <PAD_UNK>=0")
+                if any(type(value) is not int for value in mapping.values()) or sorted(mapping.values()) != list(range(len(mapping))):
+                    raise ValueError(f"{name} vocabulary IDs must be unique and contiguous")
+            if not labels.issubset(label_to_id) or not directions.issubset(direction_to_id):
+                raise ValueError("Tracking data contains labels/directions outside the fixed vocabulary")
 
         return cls(
             source_file=resolved_path,
@@ -395,7 +406,7 @@ def attach_trajectory_branch(
             f"Unsupported trajectory fusion_mode for concat-only public repo: {fusion_mode}"
         )
 
-    source = TrajectorySource.from_file(str(traj_cfg["source_file"]))
+    source = TrajectorySource.from_file(str(traj_cfg["source_file"]), vocabulary=traj_cfg.get("vocabulary"))
     model.trajectory_enabled = True
     model.trajectory_fusion_mode = fusion_mode
     model.trajectory_source_file = source.source_file
