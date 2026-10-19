@@ -29,7 +29,7 @@ function selectFrame(index) {
   $("scene-image").hidden = false;
   $("image-placeholder").hidden = true;
   $("frame-counter").textContent = `${String(index + 1).padStart(2, "0")} / ${String(frames.length).padStart(2, "0")}`;
-  $("frame-caption").textContent = index === frames.length - 1 ? "Final frame · vision input" : `Frame ${index + 1} · tracking input`;
+  $("frame-caption").textContent = index === frames.length - 1 ? "Final frame · guidance input" : `Frame ${index + 1} · vision and tracking`;
   [...$("frame-strip").children].forEach((button, i) => button.setAttribute("aria-pressed", String(i === index)));
 }
 
@@ -167,10 +167,14 @@ function showStatus(data) {
   $("status-label").textContent = { idle: "Ready to generate", running: "Processing scene", complete: "Guidance ready", error: "Run failed" }[data.status];
   $("elapsed").textContent = data.status === "idle" ? "" : `${Math.floor(data.elapsed / 60)}m ${Math.floor(data.elapsed % 60)}s`;
   $("generate-label").textContent = data.status === "running" ? "Generating guidance…" : data.status === "idle" ? "Generate guidance" : "Generate again";
-  $("run-hint").textContent = data.status === "running" ? "Loading models and processing. Guidance will be read aloud when ready." : "Guidance is read aloud automatically when ready.";
+  $("run-hint").textContent = data.status === "running"
+    ? (!data.worker_ready ? "Preparing models for the first run…"
+      : data.frames_total ? `Processed ${data.frames_done} of ${data.frames_total} frames. Guidance will be read aloud when ready.`
+      : "Processing the frame sequence. Guidance will be read aloud when ready.")
+    : "Guidance is read aloud automatically when ready.";
   $("error-message").hidden = !data.error;
   $("error-message").textContent = data.error;
-  $("run-log").textContent = data.logs.length ? data.logs.join("\n") : data.status === "running" ? "Starting main.py…" : "No run started.";
+  $("run-log").textContent = data.logs.length ? data.logs.join("\n") : data.status === "running" ? "Processing request…" : "No additional logs.";
   $("log-summary").textContent = data.status === "running" ? "Running · open for details" : data.status === "error" ? "Open to inspect the error" : data.status === "complete" ? "Run completed" : "Pipeline output will appear here";
   if (changed) {
     stopSpeech();

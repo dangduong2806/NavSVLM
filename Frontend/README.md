@@ -1,7 +1,7 @@
 # NavSVLM demo
 
-A small, local browser interface for the existing navigation pipeline. All demo
-files live in `Frontend`; the backend and model code are unchanged. No npm build,
+A small, local browser interface for the navigation pipeline. The launcher keeps
+one inference worker alive and reuses its loaded models. No npm build,
 external fonts, or additional Python packages are required for the interface.
 
 From the repository root in PowerShell, use the Python environment that already
@@ -35,7 +35,7 @@ after changing modes. Offline mode cannot supply missing model files.
 
 1. Use the **left/right arrows** beside Scene input to switch between sequences.
    Browse the thumbnails or press play to preview the selected nine-frame sequence.
-   Each press of Play starts from the first frame and repeats the sequence five
+   Each press of Play starts from the first frame and repeats the sequence nine
    times, then stops on the final frame. Press Pause to stop playback early.
 2. Click **Generate guidance** to run the existing pipeline on the selected scene
    with the same Python interpreter as the launcher, from the repository root.
@@ -55,15 +55,15 @@ camera capture, prompt editing, simulated predictions, or invented detection
 overlays are included in this first demo.
 
 The launcher serves only the frontend and the selected sample images on localhost.
-It starts `Frontend/run_pipeline.py` in a subprocess and reads the existing
-`Generated text:` output. This wrapper imports `main.py`, sets only its in-memory
-`IMAGES_DIR` to the selected scene, and calls `main()`. It never edits backend
-files, copies/replaces images, or changes the checkpoint. Running `python main.py`
-directly still uses the original scene. Model loading, dependencies, GPU selection, and cache writes remain the
-existing pipeline's behavior; Hugging Face downloads require `--online`.
-The first run can take several minutes;
-every run reloads models because `main.py` is a standalone script. Progress is
-shown as elapsed time and real logs, since the backend has no progress API.
+It starts `Frontend/run_pipeline.py --worker` on the first request. That worker
+loads InternViT/LLM, Q-Former, the tracking encoder and YOLO once, then accepts
+subsequent requests over JSON lines. Results and per-frame progress use structured
+events; model logs use a separate pipe. Each click replays the selected sequence:
+tracking and STC state reset, but weights stay loaded. No files or checkpoints
+are replaced. Hugging Face downloads require `--online`.
+The first run can take several minutes. Later runs reuse the same worker until
+the launcher stops. If the worker crashes, the current request reports an error;
+the next request starts a new worker and loads models again.
 
 Keep the launcher terminal open. Refreshing the page reconnects to the current
 run; only one run is allowed at a time. Press **Ctrl+C** in the terminal to stop
@@ -81,5 +81,38 @@ generating guidance requires the existing pipeline dependencies and checkpoints.
 .\.venv\Scripts\python.exe -m unittest discover -s Frontend -p "test_*.py" -v
 ```
 
-These tests use small temporary subprocesses to check serving, sample ordering,
-run isolation, result parsing, and errors. They do not run the model.
+These tests use small temporary workers to check serving, sample ordering,
+model-runtime reuse, request errors, crash recovery and shutdown. They do not
+load model checkpoints.
+
+## Streaming video or camera
+
+From the repository root, using your pipeline Python environment:
+
+```powershell
+$env:STC_PATCH_VISION="1"
+$env:STC_UPDATE_TOKEN_RATIO="0.25"
+$env:STC_CACHE_INTERVAL="4"
+python main.py --video path\to\video.mp4 --guidance-every 9
+# Or: python main.py --camera 0 --guidance-every 9
+```
+
+The loop reads one frame at a time and generates guidance every N frames and on
+the final partial group. Tracking and STC state continue across guidance outputs.
+Ctrl+C releases the capture. Inference is sequential; this is not a realtime
+latency guarantee. The browser remains a sample replay interface, not a camera UI.
+Set the same STC environment variables before starting `Frontend/server.py` to
+enable caching there. Restart a running launcher to apply environment changes.
+
+Python integrations can use `runtime = main.get_pipeline()` and repeatedly call
+`runtime.process_frame(rgb_uint8, stream_id="video-1", frame_id=index, generate=True)`.
+Use increasing frame IDs; change `stream_id` or call `runtime.reset_stream()` for
+a new video, scene cut or seek. Only temporal state is reset. Do not start a new
+Python process per frame; model residency is per process. STC is optional and
+disabled unless `STC_PATCH_VISION=1`.
+
+Runtime lifecycle checks with fake models (run manually):
+
+```powershell
+python -m unittest discover -s tests -p "test_streaming_pipeline.py" -v
+```

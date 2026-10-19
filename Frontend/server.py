@@ -1,4 +1,4 @@
-"""Local demo launcher. Runs the existing pipeline in an isolated subprocess."""
+"""Local demo launcher with one persistent inference worker and resident models."""
 import argparse
 import json
 import os
@@ -23,6 +23,7 @@ SCENES = {
 }
 ASSETS = {"/": ("index.html", "text/html"), "/styles.css": ("styles.css", "text/css"),
           "/app.js": ("app.js", "text/javascript")}
+EVENT_PREFIX = "NAVSVLM_EVENT "
 
 
 class DemoHTTPServer(ThreadingHTTPServer):
@@ -36,7 +37,7 @@ class DemoHTTPServer(ThreadingHTTPServer):
 
 
 def sample_frames(scene_id="wad_sample"):
-    # Match the unchanged backend's ordering and nine-frame limit.
+    # Match directory replay ordering and the demo's nine-frame limit.
     return sorted(SCENES[scene_id].glob("*.jpg"))[:9]
 
 
@@ -59,11 +60,19 @@ class Runner:
         self.error = ""
         self.logs = []
         self.scene_id = None
+        self.worker_ready = False
+        self.frames_done = 0
+        self.frames_total = 0
+        self.request_id = 0
+        self.closed = False
+        self._threads = ()
 
     def snapshot(self):
         with self.lock:
             return {"status": self.status, "answer": self.answer, "error": self.error,
                     "scene_id": self.scene_id,
+                    "worker_ready": self.worker_ready,
+                    "frames_done": self.frames_done, "frames_total": self.frames_total,
                     "logs": list(self.logs), "elapsed": round(
                         (self.finished or time.monotonic()) - self.started, 1
                     ) if self.started is not None else 0}
@@ -72,69 +81,140 @@ class Runner:
         if scene_id not in SCENES:
             raise ValueError("Unknown sample scene.")
         with self.lock:
+            if self.closed:
+                raise RuntimeError("Runner has been closed")
             if self.status == "running":
                 return False
             self.status, self.answer, self.error = "running", "", ""
             self.logs = []
+            self.frames_done, self.frames_total = 0, 0
+            self.request_id += 1
             self.scene_id = scene_id
             self.started, self.finished = time.monotonic(), None
             try:
-                self.process = subprocess.Popen(
-                    [sys.executable, "-u", str(FRONTEND / "run_pipeline.py"),
-                     "--pipeline", str(PIPELINE), "--images-dir", str(SCENES[scene_id])], cwd=str(ROOT),
-                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                    text=True, encoding="utf-8", errors="replace",
-                    env={**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUNBUFFERED": "1",
-                         "HF_HUB_OFFLINE": "1" if self.offline else "0",
-                         "TRANSFORMERS_OFFLINE": "1" if self.offline else "0"},
-                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-                )
-            except OSError as exc:
+                if self.process is None or self.process.poll() is not None:
+                    if self.process is not None and self.process.stdin is not None:
+                        self.process.stdin.close()
+                    self.worker_ready = False
+                    self.process = subprocess.Popen(
+                        [sys.executable, "-u", str(FRONTEND / "run_pipeline.py"),
+                         "--pipeline", str(PIPELINE), "--worker"], cwd=str(ROOT),
+                        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                        text=True, encoding="utf-8", errors="replace", bufsize=1,
+                        env={**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUNBUFFERED": "1",
+                             "HF_HUB_OFFLINE": "1" if self.offline else "0",
+                             "TRANSFORMERS_OFFLINE": "1" if self.offline else "0"},
+                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                    )
+                    self._threads = (
+                        threading.Thread(target=self._collect, args=(self.process,), daemon=True),
+                        threading.Thread(target=self._collect_logs, args=(self.process,), daemon=True),
+                    )
+                    for thread in self._threads:
+                        thread.start()
+                self.process.stdin.write(json.dumps({
+                    "id": self.request_id, "command": "run", "images_dir": str(SCENES[scene_id]), "limit": 9,
+                }) + "\n")
+                self.process.stdin.flush()
+            except (OSError, ValueError) as exc:
                 self.status, self.error = "error", str(exc)
                 self.finished = time.monotonic()
+                self.worker_ready = False
+                if self.process is not None and self.process.poll() is None:
+                    self.process.terminate()
                 return True
-            threading.Thread(target=self._collect, args=(self.process,), daemon=True).start()
             return True
 
+    def _collect_logs(self, process):
+        # Keep progress bars / partial log lines off the JSON protocol pipe.
+        with process.stderr:
+            for line in process.stderr:
+                with self.lock:
+                    if process is self.process and not self.closed:
+                        self.logs.append(line.rstrip())
+                        self.logs = self.logs[-150:]
+
     def _collect(self, process):
-        output = []
-        collecting_answer = False
         try:
             with process.stdout:
                 for line in process.stdout:
                     line = line.rstrip()
                     with self.lock:
-                        self.logs.append(line)
-                        self.logs = self.logs[-150:]
-                    if line.startswith("Generated text:"):
-                        collecting_answer = True
-                        output = [line.partition("Generated text:")[2].strip()]
-                    elif collecting_answer:
-                        output.append(line)
+                        if process is not self.process or self.closed:
+                            continue
+                        if line.startswith(EVENT_PREFIX):
+                            try:
+                                event = json.loads(line[len(EVENT_PREFIX):])
+                            except ValueError:
+                                event = {}
+                            if event.get("id") != self.request_id:
+                                continue
+                            kind = event.get("event")
+                            if kind == "ready":
+                                self.worker_ready = True
+                            elif kind == "progress":
+                                self.frames_done = event["frames_done"]
+                                self.frames_total = event["frames_total"]
+                            elif kind in {"complete", "error"} and self.status == "running":
+                                self.answer = event.get("answer", "") if kind == "complete" else ""
+                                self.status = "complete" if self.answer else "error"
+                                self.error = event.get("error", "") if kind == "error" else ""
+                                if self.status == "error" and not self.error:
+                                    self.error = "The pipeline finished without generated guidance."
+                                if self.error:
+                                    self.logs.append(f"Error: {self.error}")
+                                    self.logs = self.logs[-150:]
+                                self.finished = time.monotonic()
+                        else:
+                            self.logs.append(line)
+                            self.logs = self.logs[-150:]
             code = process.wait()
             with self.lock:
-                self.answer = "\n".join(output).strip() if code == 0 else ""
-                self.status = "complete" if code == 0 and self.answer else "error"
-                if self.status == "error":
-                    self.error = (f"Pipeline exited with code {code}. See the run log below."
-                                  if code else "The pipeline finished without generated guidance. See the run log.")
-                self.finished = time.monotonic()
+                if process is self.process and not self.closed:
+                    self.worker_ready = False
+                    if self.status == "running":
+                        self.answer = ""
+                        self.status = "error"
+                        self.error = f"Worker exited with code {code}. Retry to start a new worker."
+                        self.finished = time.monotonic()
         except Exception as exc:
             with self.lock:
-                self.status, self.error = "error", str(exc)
-                self.finished = time.monotonic()
+                if process is self.process and not self.closed:
+                    self.status, self.error = "error", str(exc)
+                    self.finished = time.monotonic()
+                    self.worker_ready = False
+                    if process.poll() is None:
+                        process.terminate()
 
     def close(self):
         with self.lock:
+            self.closed = True
             process = self.process
+            self.worker_ready = False
+            if self.status == "running":
+                self.status, self.error = "error", "Worker stopped."
+                self.finished = time.monotonic()
             if process is not None and process.poll() is None:
-                process.terminate()
+                try:
+                    process.stdin.write(json.dumps({"command": "shutdown"}) + "\n")
+                    process.stdin.flush()
+                except (OSError, ValueError):
+                    process.terminate()
         if process is not None:
             try:
                 process.wait(timeout=5)
             except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait()
+                process.terminate()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=5)
+            finally:
+                if process.stdin is not None:
+                    process.stdin.close()
+                for thread in self._threads:
+                    thread.join(timeout=1)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -217,7 +297,7 @@ def main():
     print(f"NavSVLM demo: http://127.0.0.1:{server.server_port}", flush=True)
     print(f"Pipeline interpreter: {sys.executable}", flush=True)
     print(f"Hugging Face: {'online' if args.online else 'offline (cached files only)'}", flush=True)
-    print("Press Ctrl+C to stop. Models load only when you click Generate guidance.", flush=True)
+    print("Models load on the first request and stay in memory until Ctrl+C.", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

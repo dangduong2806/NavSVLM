@@ -42,7 +42,26 @@ class DemoTests(unittest.TestCase):
         return code, body
 
     def write_pipeline(self, code, encoding="utf-8"):
-        self.pipeline.write_text("def main():\n" + textwrap.indent(code, "    "), encoding=encoding)
+        source = (
+            "class Runtime:\n"
+            "    def __init__(self):\n"
+            "        self.calls = 0\n"
+            "    def reset_stream(self, stream_id=None):\n"
+            "        pass\n"
+            "    def run_directory(self, images_dir, *, limit=9, on_progress=None):\n"
+            "        self.calls += 1\n"
+            "        IMAGES_DIR = images_dir\n"
+            "        if on_progress:\n"
+            "            on_progress(1, 1)\n"
+            + textwrap.indent(code, "        ")
+            + "\n_runtime = None\n"
+            "def get_pipeline():\n"
+            "    global _runtime\n"
+            "    if _runtime is None:\n"
+            "        _runtime = Runtime()\n"
+            "    return _runtime\n"
+        )
+        self.pipeline.write_text(source, encoding=encoding)
 
     def wait_for_result(self):
         deadline = time.monotonic() + 5
@@ -81,7 +100,7 @@ class DemoTests(unittest.TestCase):
             duplicate.server_close()
 
     def test_success_multiline_output_and_duplicate_run(self):
-        self.write_pipeline("import time\nprint('Loading...')\ntime.sleep(0.5)\nprint('Generated text: Pause here.')\nprint('A pedestrian is ahead.')\n", encoding="utf-8")
+        self.write_pipeline("import time\nprint('Loading...')\ntime.sleep(0.5)\nreturn 'Pause here.\\nA pedestrian is ahead.'\n")
         self.assertEqual(self.request("/api/run", "POST", {"Origin": self.origin})[0], 202)
         self.assertEqual(self.request("/api/run", "POST", {"Origin": self.origin})[0], 409)
         result = self.wait_for_result()
@@ -90,16 +109,18 @@ class DemoTests(unittest.TestCase):
         self.assertIn("Loading...", result["logs"])
         self.assertEqual(json.loads(self.request("/api/status")[1])["answer"], result["answer"])
 
-    def test_nonzero_exit_and_retry(self):
-        self.write_pipeline("raise RuntimeError('test failure')\n", encoding="utf-8")
+    def test_request_failure_and_retry_reuse_worker(self):
+        self.write_pipeline("if self.calls == 1:\n    raise RuntimeError('test failure')\nreturn 'Retry succeeded.'\n")
         self.runner.start()
         result = self.wait_for_result()
         self.assertEqual(result["status"], "error")
-        self.assertIn("code 1", result["error"])
+        self.assertIn("test failure", result["error"])
         self.assertTrue(any("test failure" in line for line in result["logs"]))
-        self.write_pipeline("print('Generated text: Retry succeeded.')\n", encoding="utf-8")
+        process = self.runner.process
         self.runner.start()
         self.assertEqual(self.wait_for_result()["answer"], "Retry succeeded.")
+        self.assertIs(self.runner.process, process)
+        self.assertIsNone(process.poll())
 
     def test_missing_output_is_not_success(self):
         self.write_pipeline("print('No guidance emitted')\n", encoding="utf-8")
@@ -115,12 +136,14 @@ class DemoTests(unittest.TestCase):
 
     def test_offline_flags_reach_child_and_online_overrides_them(self):
         self.write_pipeline(
-            "import os\nprint('Generated text:', os.environ['HF_HUB_OFFLINE'], os.environ['TRANSFORMERS_OFFLINE'])\n",
+            "import os\nreturn os.environ['HF_HUB_OFFLINE'] + ' ' + os.environ['TRANSFORMERS_OFFLINE']\n",
             encoding="utf-8",
         )
         for offline, expected in ((True, "1 1"), (False, "0 0")):
             with self.subTest(offline=offline):
-                self.runner.offline = offline
+                self.runner.close()
+                self.runner = server.Runner(offline=offline)
+                self.httpd.runner = self.runner
                 with patch.dict(server.os.environ, {"HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1"}):
                     self.runner.start()
                 self.assertEqual(self.wait_for_result()["answer"], expected)
@@ -139,7 +162,7 @@ class DemoTests(unittest.TestCase):
                             self.request(scenes[1]["frames"][-1]["url"])[1])
 
     def test_scene_selection_reaches_pipeline_without_changing_files(self):
-        self.write_pipeline("print('Generated text:', IMAGES_DIR)\n")
+        self.write_pipeline("return str(IMAGES_DIR)\n")
         original = self.pipeline.read_bytes()
         for scene_id, images_dir in server.SCENES.items():
             with self.subTest(scene=scene_id):
@@ -156,6 +179,43 @@ class DemoTests(unittest.TestCase):
             self.assertEqual(self.request(f"/api/run?scene={scene}", "POST", {"Origin": self.origin})[0], 400)
         self.assertEqual(self.request("/frames/unknown/0")[0], 404)
         self.assertEqual(self.runner.snapshot()["status"], "idle")
+
+    def test_repeated_requests_keep_same_runtime_and_process(self):
+        self.write_pipeline("return str(self.calls)\n")
+        self.runner.start()
+        first = self.wait_for_result()
+        process = self.runner.process
+        self.assertEqual(first["answer"], "1")
+        self.assertTrue(first["worker_ready"])
+        self.assertEqual(first["frames_done"], 1)
+        self.runner.start("wad_sample_2")
+        self.assertEqual(self.wait_for_result()["answer"], "2")
+        self.assertIs(self.runner.process, process)
+        self.assertIsNone(process.poll())
+
+    def test_worker_crash_is_reported_and_next_request_restarts(self):
+        marker = Path(self.temp.name) / "crashed"
+        self.write_pipeline(
+            "import os\nfrom pathlib import Path\n"
+            f"marker = Path({str(marker)!r})\n"
+            "if not marker.exists():\n    marker.touch()\n    os._exit(7)\n"
+            "return 'Recovered.'\n"
+        )
+        self.runner.start()
+        self.assertIn("code 7", self.wait_for_result()["error"])
+        process = self.runner.process
+        self.runner.start()
+        self.assertEqual(self.wait_for_result()["answer"], "Recovered.")
+        self.assertIsNot(self.runner.process, process)
+
+    def test_close_stops_resident_worker(self):
+        self.write_pipeline("return 'Ready.'\n")
+        self.runner.start()
+        self.wait_for_result()
+        process = self.runner.process
+        self.runner.close()
+        self.assertIsNotNone(process.poll())
+        self.assertFalse(self.runner.snapshot()["worker_ready"])
 
 
 if __name__ == "__main__":

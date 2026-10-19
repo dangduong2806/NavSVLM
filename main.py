@@ -2,11 +2,18 @@
 
 Uses the notebook's 107 labels with the training code's alphabetical IDs.
 Tracking attention uses four heads.
+Models are retained by get_pipeline() for the lifetime of the process.
+Use --video path.mp4 or --camera 0 for a continuous frame source.
+Set STC_PATCH_VISION=1 to encode consecutive frames with InternViT STC-Cacher.
+STC_UPDATE_TOKEN_RATIO (default 0.25) and STC_CACHE_INTERVAL (default 4)
+control selective recomputation and reference refresh. STC is opt-in.
 """
 import json
 import math
 import os
 from pathlib import Path
+import sys
+import threading
 
 os.environ["USE_TF"] = "0"
 os.environ["USE_TORCH"] = "1"
@@ -15,7 +22,6 @@ os.environ.setdefault("HF_MODULES_CACHE", str(Path(__file__).resolve().parent / 
 import numpy as np
 import torch
 import yaml
-from PIL import Image
 from safetensors import safe_open
 from safetensors.torch import load_file
 from torch import nn
@@ -78,8 +84,8 @@ def load_vocabularies():
     return label_vocab, direction_vocab
 
 
-def track_objects(frames, label_vocab, direction_vocab):
-    """Run BoT-SORT/ReID on nine images and encode the final six object slots."""
+def load_detector():
+    """Load YOLO once; the streaming runtime owns its predictor and trackers."""
     from ultralytics import YOLO
     from ultralytics.utils import ROOT as YOLO_ROOT
 
@@ -88,6 +94,17 @@ def track_objects(frames, label_vocab, direction_vocab):
     tracker_path = CACHE_DIR / "botsort_reid.yaml"
     tracker_path.write_text(yaml.safe_dump(config), encoding="utf-8")
     detector = YOLO(str(CACHE_DIR / "yolo11n.pt"))
+    return detector, tracker_path
+
+
+def track_objects(frames, label_vocab, direction_vocab, *, detector=None, tracker_path=None):
+    """Advance an existing tracker and encode the final six object slots."""
+    if not frames:
+        raise ValueError("At least one frame is required")
+    if detector is None:
+        detector, tracker_path = load_detector()
+    if tracker_path is None:
+        raise ValueError("tracker_path is required when reusing a detector")
 
     for frame in frames:
         result = detector.track(
@@ -213,39 +230,27 @@ def load_models():
         "qformer_to_mlp1_proj": nn.Sequential(nn.LayerNorm(768), nn.Linear(768, 4096)),
     })
     projections.load_state_dict(load_file(str(CHECKPOINT / "qformer_bridge.safetensors")), strict=True)
+    stc_enabled = os.environ.get("STC_PATCH_VISION", "0")
+    if stc_enabled not in ("0", "1"):
+        raise ValueError("STC_PATCH_VISION must be 0 or 1")
+    if stc_enabled == "1":
+        from Vision_Encoder.stc_cacher import enable_stc_cacher
+
+        enable_stc_cacher(
+            model.vision_model,
+            update_token_ratio=float(os.environ.get("STC_UPDATE_TOKEN_RATIO", "0.25")),
+            cache_interval=int(os.environ.get("STC_CACHE_INTERVAL", "4")),
+        )
     return model, tokenizer, qformer, queries, qtokenizer, projections.to(DEVICE).eval()
 
 
 @torch.inference_mode()
-def main():
-    (CACHE_DIR / "ultralytics").mkdir(parents=True, exist_ok=True)
-    os.environ["YOLO_CONFIG_DIR"] = str(CACHE_DIR / "ultralytics")
-    os.environ["YOLO_AUTOINSTALL"] = "false"
-    init_logger(str(CACHE_DIR) + os.sep)
-
-    # Load the full label vocabulary before downloading the large base weights.
-    label_vocab, direction_vocab = load_vocabularies()
-
-    from Concat_Q_Former.qformer_bridge import _extract_vit_tokens
+def generate_guidance(model_bundle, tracking_bundle, visual_tokens, tracking_inputs):
+    """Generate from the latest frame using already loaded model instances."""
     from MLP_LLM.conversation import get_conv_template
-
-    # 1. INPUTS: the sample supplies nine images; vision uses only the last one.
-    frames = []
-    for path in sorted(IMAGES_DIR.glob("*.jpg"))[:9]:
-        with Image.open(path) as image:
-            frames.append(np.array(image.convert("RGB")))
-
-    # 2. TRACKING: keep the online tracker; use training vocabulary IDs.
-    label_ids, direction_ids, numeric_features, object_mask = track_objects(frames, label_vocab, direction_vocab)
-    tracking_encoder, trajectory_projection = load_tracking_encoder(TRACKING_HEADS)
-    model, tokenizer, qformer, queries, qtokenizer, projections = load_models()
-
-    # 3. VISION: 448px RGB -> normalized pixels -> 256 tokens of width 4096.
-    image = Image.fromarray(frames[-1]).resize((448, 448), Image.Resampling.BICUBIC)
-    pixels = torch.from_numpy(np.array(image, dtype=np.float32) / 255).permute(2, 0, 1).unsqueeze(0).to(DEVICE)
-    mean = torch.tensor([0.485, 0.456, 0.406], device=DEVICE).view(1, 3, 1, 1)
-    std = torch.tensor([0.229, 0.224, 0.225], device=DEVICE).view(1, 3, 1, 1)
-    visual_tokens = _extract_vit_tokens(model, ((pixels - mean) / std).to(DTYPE))
+    model, tokenizer, qformer, queries, qtokenizer, projections = model_bundle
+    tracking_encoder, trajectory_projection = tracking_bundle
+    label_ids, direction_ids, numeric_features, object_mask = tracking_inputs
 
     # 4. PROMPT-AWARE Q-FORMER: the checkpoint configuration requires text here.
     visual_input = projections["qformer_input_proj"](visual_tokens.float()).to(DTYPE)
@@ -289,8 +294,48 @@ def main():
         eos_token_id=stop_id, pad_token_id=stop_id,
     )
     answer = tokenizer.decode(output_ids[0], skip_special_tokens=True).split(template.sep)[0].strip()
-    print("Generated text:", answer)
+    return answer
+
+
+_pipeline = None
+_pipeline_lock = threading.Lock()
+
+
+def get_pipeline():
+    """One lazy runtime per process, reused by the CLI and persistent worker."""
+    global _pipeline
+    with _pipeline_lock:
+        if _pipeline is None:
+            from streaming_pipeline import StreamingPipeline
+
+            _pipeline = StreamingPipeline(backend=sys.modules[__name__])
+    return _pipeline
+
+
+def main(images_dir=None, limit=9):
+    answer = get_pipeline().run_directory(images_dir or IMAGES_DIR, limit=limit)
+    print("Generated text:", answer, flush=True)
+    return answer
 
 
 if __name__ == "__main__":
-    main()
+    import argparse
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    source = parser.add_mutually_exclusive_group()
+    source.add_argument("--images-dir", type=Path, default=None)
+    source.add_argument("--video", type=Path, help="Stream a local video file")
+    source.add_argument("--camera", type=int, help="Stream an OpenCV camera index, e.g. 0")
+    parser.add_argument("--limit", type=int, default=9, help="Directory frame limit; 0 means all JPGs")
+    parser.add_argument("--guidance-every", type=int, default=9, help="Generate once per N video/camera frames")
+    args = parser.parse_args()
+    if args.limit < 0 or args.guidance_every < 1:
+        parser.error("--limit must be nonnegative and --guidance-every must be positive")
+    try:
+        if args.video is not None or args.camera is not None:
+            get_pipeline().run_video(str(args.video) if args.video is not None else args.camera,
+                                     guidance_every=args.guidance_every)
+        else:
+            main(args.images_dir, args.limit)
+    except KeyboardInterrupt:
+        print("Streaming stopped.", flush=True)
