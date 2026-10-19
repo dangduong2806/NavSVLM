@@ -14,6 +14,7 @@ from urllib.parse import parse_qs, urlsplit
 FRONTEND = Path(__file__).resolve().parent
 ROOT = FRONTEND.parent
 PIPELINE = ROOT / "main.py"
+PIPELINE_CHOICES = ("main.py", "main_parallel.py")
 IMAGES = ROOT / "wad_sample" / "images"
 SCENES = {
     "wad_sample": IMAGES,
@@ -48,8 +49,9 @@ def scene_description(scene_id, index):
 
 
 class Runner:
-    def __init__(self, offline=True):
+    def __init__(self, offline=True, pipeline=None):
         self.offline = offline
+        self.pipeline = Path(pipeline) if pipeline is not None else None
         self.lock = threading.Lock()
         self.process = None
         self.started = None
@@ -63,6 +65,7 @@ class Runner:
     def snapshot(self):
         with self.lock:
             return {"status": self.status, "answer": self.answer, "error": self.error,
+                    "pipeline": (self.pipeline or PIPELINE).name,
                     "scene_id": self.scene_id,
                     "logs": list(self.logs), "elapsed": round(
                         (self.finished or time.monotonic()) - self.started, 1
@@ -81,7 +84,7 @@ class Runner:
             try:
                 self.process = subprocess.Popen(
                     [sys.executable, "-u", str(FRONTEND / "run_pipeline.py"),
-                     "--pipeline", str(PIPELINE), "--images-dir", str(SCENES[scene_id])], cwd=str(ROOT),
+                     "--pipeline", str(self.pipeline or PIPELINE), "--images-dir", str(SCENES[scene_id])], cwd=str(ROOT),
                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                     text=True, encoding="utf-8", errors="replace",
                     env={**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUNBUFFERED": "1",
@@ -205,17 +208,23 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", type=int, default=8000)
+    parser.add_argument("--pipeline", choices=PIPELINE_CHOICES, default="main.py",
+                        help="Pipeline to run when generating guidance (default: main.py, sequential).")
     parser.add_argument("--online", action="store_true",
                         help="Allow Hugging Face downloads and update checks (default: cached files only).")
     args = parser.parse_args()
+    pipeline = ROOT / args.pipeline
+    if not pipeline.is_file():
+        parser.error(f"Pipeline file not found: {pipeline}")
     try:
         server = DemoHTTPServer(("127.0.0.1", args.port), Handler)
     except OSError as exc:
         parser.exit(1, f"Cannot listen on port {args.port}: {exc}\n"
                        "Stop the existing launcher or choose another --port.\n")
-    server.runner = Runner(offline=not args.online)
+    server.runner = Runner(offline=not args.online, pipeline=pipeline)
     print(f"NavSVLM demo: http://127.0.0.1:{server.server_port}", flush=True)
     print(f"Pipeline interpreter: {sys.executable}", flush=True)
+    print(f"Pipeline: {pipeline.name}", flush=True)
     print(f"Hugging Face: {'online' if args.online else 'offline (cached files only)'}", flush=True)
     print("Press Ctrl+C to stop. Models load only when you click Generate guidance.", flush=True)
     try:

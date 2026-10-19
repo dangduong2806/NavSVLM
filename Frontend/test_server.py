@@ -1,5 +1,6 @@
 """Launcher integration tests with tiny subprocesses; no model weights are loaded."""
 import http.client
+import io
 import json
 from pathlib import Path
 import tempfile
@@ -156,6 +157,56 @@ class DemoTests(unittest.TestCase):
             self.assertEqual(self.request(f"/api/run?scene={scene}", "POST", {"Origin": self.origin})[0], 400)
         self.assertEqual(self.request("/frames/unknown/0")[0], 404)
         self.assertEqual(self.runner.snapshot()["status"], "idle")
+
+    def test_selected_pipeline_runs_with_each_scene(self):
+        self.write_pipeline("raise AssertionError('Default pipeline must not run')\n")
+        selected = Path(self.temp.name) / "main_parallel.py"
+        # Exercise the wrapper's registered import, required by dataclass-based
+        # pipelines, and the scene override without loading real model weights.
+        selected.write_text(
+            "from dataclasses import dataclass\n"
+            "@dataclass\nclass Result:\n    text: str\n"
+            "def main():\n    print('Generated text:', Result(str(IMAGES_DIR)).text)\n",
+            encoding="utf-8",
+        )
+        self.runner.pipeline = selected
+        for scene_id, images_dir in server.SCENES.items():
+            with self.subTest(scene=scene_id):
+                code, body = self.request(f"/api/run?scene={scene_id}", "POST", {"Origin": self.origin})
+                self.assertEqual(code, 202)
+                self.assertEqual(json.loads(body)["pipeline"], "main_parallel.py")
+                result = self.wait_for_result()
+                self.assertEqual(result["status"], "complete")
+                self.assertEqual(result["answer"], str(images_dir.resolve()))
+                self.assertEqual(json.loads(self.request("/api/status")[1])["pipeline"], "main_parallel.py")
+
+    def test_terminal_pipeline_selection_and_default(self):
+        root = Path(self.temp.name)
+        for name in server.PIPELINE_CHOICES:
+            (root / name).write_text("def main(): pass\n", encoding="utf-8")
+        for flags, expected in (([], "main.py"), (["--pipeline", "main.py"], "main.py"),
+                                (["--pipeline", "main_parallel.py"], "main_parallel.py")):
+            with self.subTest(flags=flags), patch.object(server, "ROOT", root), \
+                    patch.object(server.sys, "argv", ["server.py", "--port", "8080", "--online", *flags]), \
+                    patch.object(server, "DemoHTTPServer") as listener, \
+                    patch.object(server.sys, "stdout", new_callable=io.StringIO) as output:
+                server.main()
+                listener.assert_called_once_with(("127.0.0.1", 8080), server.Handler)
+                runner = listener.return_value.runner
+                self.assertEqual(runner.pipeline, root / expected)
+                self.assertFalse(runner.offline)
+                self.assertIn(f"Pipeline: {expected}", output.getvalue())
+
+    def test_terminal_rejects_unknown_or_missing_pipeline_before_listening(self):
+        for filename in ("../main.py", "other.py", "main_parallel.py"):
+            with self.subTest(filename=filename), patch.object(server, "ROOT", Path(self.temp.name)), \
+                    patch.object(server.sys, "argv", ["server.py", "--pipeline", filename]), \
+                    patch.object(server, "DemoHTTPServer") as listener, \
+                    patch.object(server.sys, "stderr", new_callable=io.StringIO):
+                with self.assertRaises(SystemExit) as error:
+                    server.main()
+                self.assertEqual(error.exception.code, 2)
+                listener.assert_not_called()
 
 
 if __name__ == "__main__":

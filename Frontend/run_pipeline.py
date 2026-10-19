@@ -1,4 +1,4 @@
-"""Select a demo sequence without editing main.py or replacing sample files."""
+"""Run the selected pipeline and demo sequence without editing backend files."""
 import argparse
 import importlib.util
 from pathlib import Path
@@ -7,14 +7,14 @@ import sys
 
 def run_pipeline(pipeline_path, images_dir):
     pipeline_path = Path(pipeline_path).resolve()
-    # main.py's imports must resolve as they do when run from the project root.
+    # Pipeline imports must resolve as they do from the project root.
     sys.path.insert(0, str(pipeline_path.parent))
     spec = importlib.util.spec_from_file_location("navsvlm_demo_pipeline", pipeline_path)
     pipeline = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = pipeline
     spec.loader.exec_module(pipeline)
     # Only the input directory changes, inside this subprocess. All checkpoint,
-    # preprocessing, tracking, prompt and generation settings remain main.py's.
+    # preprocessing, tracking, prompt and generation settings remain the selected pipeline's.
     pipeline.IMAGES_DIR = Path(images_dir).resolve()
     pipeline.main()
 

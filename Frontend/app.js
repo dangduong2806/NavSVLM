@@ -170,7 +170,7 @@ function showStatus(data) {
   $("run-hint").textContent = data.status === "running" ? "Loading models and processing. Guidance will be read aloud when ready." : "Guidance is read aloud automatically when ready.";
   $("error-message").hidden = !data.error;
   $("error-message").textContent = data.error;
-  $("run-log").textContent = data.logs.length ? data.logs.join("\n") : data.status === "running" ? "Starting main.py…" : "No run started.";
+  $("run-log").textContent = data.logs.length ? data.logs.join("\n") : data.status === "running" ? `Starting ${data.pipeline || "main.py"}…` : "No run started.";
   $("log-summary").textContent = data.status === "running" ? "Running · open for details" : data.status === "error" ? "Open to inspect the error" : data.status === "complete" ? "Run completed" : "Pipeline output will appear here";
   if (changed) {
     stopSpeech();

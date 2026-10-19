@@ -11,6 +11,18 @@ runs `main.py`:
 .\.venv\Scripts\python.exe Frontend\server.py
 ```
 
+The default pipeline is **sequential** (`main.py`). To launch the same UI with
+the **parallel** pipeline, choose it in the terminal:
+
+```powershell
+.\.venv\Scripts\python.exe Frontend\server.py --pipeline main_parallel.py
+```
+
+You can also select sequential execution explicitly with `--pipeline main.py`.
+The launcher prints the selected filename at startup. This choice applies to
+every run and both scenes; restart the launcher to change it. The option works
+with `--port` and `--online` as well.
+
 Open **http://127.0.0.1:8000**. If your working pipeline uses a different Python
 environment, use that interpreter instead. To choose another port:
 
@@ -56,13 +68,16 @@ overlays are included in this first demo.
 
 The launcher serves only the frontend and the selected sample images on localhost.
 It starts `Frontend/run_pipeline.py` in a subprocess and reads the existing
-`Generated text:` output. This wrapper imports `main.py`, sets only its in-memory
+`Generated text:` output. This wrapper imports the selected pipeline (`main.py`
+or `main_parallel.py`), sets only its in-memory
 `IMAGES_DIR` to the selected scene, and calls `main()`. It never edits backend
 files, copies/replaces images, or changes the checkpoint. Running `python main.py`
 directly still uses the original scene. Model loading, dependencies, GPU selection, and cache writes remain the
 existing pipeline's behavior; Hugging Face downloads require `--online`.
 The first run can take several minutes;
-every run reloads models because `main.py` is a standalone script. Progress is
+every click starts a new subprocess and reloads models. The RAM/VRAM model cache
+in `main_parallel.py` is reused only within one process, so it does not persist
+between UI runs. Progress is
 shown as elapsed time and real logs, since the backend has no progress API.
 
 Keep the launcher terminal open. Refreshing the page reconnects to the current
@@ -71,7 +86,7 @@ the launcher and any active inference subprocess. Results are kept in memory
 until a new run or launcher restart. Read-aloud uses your browser's available
 speech voices and requires browser support.
 
-If inference fails, inspect **Run log** and confirm that `main.py` works with the
+If inference fails, inspect **Run log** and confirm that the selected pipeline works with the
 same interpreter. The interface can be opened without loading model weights;
 generating guidance requires the existing pipeline dependencies and checkpoints.
 
