@@ -1,21 +1,23 @@
 ﻿
-# NavVLM System Architecture
+# NavSVLM System Architecture
 
-Dưới đây là sơ đồ tổng quan về kiến trúc và luồng xử lý dữ liệu của hệ thống **NavVLM**, tích hợp **STC-Cacher** nhằm tăng tốc Vision Encoder.
+Dưới đây là sơ đồ kiến trúc và luồng xử lý dữ liệu của **NavSVLM**. STC-Cacher được tích hợp tùy chọn trong Vision Encoder để giảm tính toán lặp giữa các frame. Các giá trị cập nhật 25% patch và chu kỳ tham chiếu 4 frame minh họa cấu hình benchmark; runtime mặc định tắt STC.
 
 ```mermaid
 flowchart TB
     subgraph INPUTS["1. ĐẦU VÀO (INPUTS)"]
         Prompt["Text Prompt:<br/>'Describe the scene for a visually impaired user...'"]
-        InFrame["Khung hình hiện tại (Input Frame)<br/>[1 Ảnh tĩnh]"]
-        FrameSeq["Chuỗi 9 khung hình liên tiếp<br/>[Frame Queue]"]
+        InFrame["Khung hình RGB hiện tại<br/>Tiếp nhận tuần tự từ chuỗi ảnh hoặc video"]
     end
 
     subgraph VISUAL_BRANCH["2. NHÁNH THỊ GIÁC (VISUAL BRANCH)"]
 
         subgraph VE["Vision Encoder: InternViT + STC-Cacher"]
 
+            Preprocess["Resize 448 × 448 và chuẩn hóa"]
             STCInput["Patch Embedding + CLS + Position Embedding"]
+            STCEnabled{"Bật STC-Cacher?"}
+            Native["InternViT forward đầy đủ<br/>Không dùng reference cache STC"]
 
             STCCheck{"Reference Frame?<br/>Chu kỳ N = 4<br/>Frame 1, 5, 9,... hoặc cache không hợp lệ"}
 
@@ -27,7 +29,7 @@ flowchart TB
 
                 Select["2. Token Selection<br/>So sánh Cosine Similarity của K<br/>Chọn 25% patch thay đổi nhiều nhất + CLS"]
 
-                Compute["3. Selective Computation<br/>Tính lại Attention và MLP<br/>cho token được chọn"]
+                Compute["3. Selective Computation<br/>Q/V mới tại token được chọn<br/>Attention trên toàn bộ K hiện tại và V đã ghép<br/>MLP tại token được chọn"]
 
                 Reuse["4. Cache Reuse<br/>Tái sử dụng kết quả token còn lại<br/>Ghép thành đầu ra đầy đủ"]
 
@@ -42,9 +44,12 @@ flowchart TB
 
             STCOutput["Encoder Output<br/>Giữ nguyên số token"]
 
-            STCFeatures["Pixel Shuffle<br/>256 Visual Tokens"]
+            STCFeatures["Bỏ CLS + Pixel Shuffle<br/>256 × 4096"]
 
-            STCInput --> STCCheck
+            Preprocess --> STCInput --> STCEnabled
+            STCEnabled -->|Có| STCCheck
+            STCEnabled -->|Không| Native
+            Native --> STCOutput
 
             STCCheck -->|YES| Full
             STCCheck -->|NO| Select
@@ -56,14 +61,15 @@ flowchart TB
 
         end
 
-        QF["Q-Former (InstructBLIP)<br/>32 Learnable Queries + Instruction-Aware Cross-Attention"]
+        InputProj["Input projection<br/>4096 → 1408"]
+        QF["Q-Former (InstructBLIP)<br/>32 query + câu lệnh<br/>Đầu ra 32 × 768"]
 
-        VisTokens["Compressed Visual Tokens<br/>(Nén 8x: từ 256 còn 32 Tokens)"]
+        VisTokens["Output projection + Visual MLP<br/>768 → 4096 → 2048<br/>32 token thị giác"]
 
     end
 
     subgraph TRACKING_BRANCH["3. NHÁNH THEO DÕI VẬT THỂ (TRACKING BRANCH)"]
-        BoTSORT["Object Tracker (BoT-SORT + ReID)<br/>Theo dõi tối đa 6 vật thể"]
+        BoTSORT["YOLO11n + BoT-SORT/ReID<br/>Cập nhật tracker qua từng frame<br/>Chọn tối đa 6 vật thể để mã hóa"]
 
         subgraph TRACKING_ENCODER["Tracking Encoder"]
             AttrsCategorical["Thuộc tính Phân loại:<br/>- Category Label ID<br/>- Relative Position ID"]
@@ -75,24 +81,24 @@ flowchart TB
             SetTrans["Set Transformer Encoder<br/>(4 layers Self-Attention + Padding Mask)"]
         end
 
-        TrajTokens["Object Trajectory Tokens<br/>(Token Quỹ đạo)"]
+        TrajTokens["Token thuộc tính vật thể<br/>6 × 384"]
+        TrajProj["Trajectory projector + object mask<br/>6 × 2048"]
     end
 
     subgraph FUSION_MODULE["4. KHÂU DUNG HỢP (TOKEN FUSION)"]
-        ConcatHead["Token Concatenation (ConcatHead)<br/>(Nối trực tiếp các Token)"]
-        ProjMLP["Vision-Trajectory Projection MLP"]
+        ConcatHead["Nối theo chiều token sau các phép chiếu riêng<br/>32 + 6 = 38 token, chiều 2048"]
     end
 
     subgraph LLM_MODULE["5. MÔ HÌNH NGÔN NGỮ & ĐẦU RA"]
-        LLM["Large Language Model<br/>(InternVL-2B + Q-LoRA Adapter)"]
+        LLM["InternLM2.5 trong InternVL2_5-2B<br/>LoRA adapter"]
         Answer["Đầu ra: Hướng dẫn / Cảnh báo an toàn<br/>(Ví dụ: 'Pedestrian passing at eleven o'clock...')"]
     end
 
-    InFrame --> STCInput
-    STCFeatures --> QF
+    InFrame --> Preprocess
+    STCFeatures --> InputProj --> QF
     QF --> VisTokens
 
-    FrameSeq --> BoTSORT
+    InFrame --> BoTSORT
     BoTSORT --> AttrsCategorical & AttrsNumeric
     AttrsCategorical --> LabelEmbed
     AttrsNumeric --> NumericMLP
@@ -103,11 +109,14 @@ flowchart TB
     SetTrans --> TrajTokens
 
     VisTokens --> ConcatHead
-    TrajTokens --> ConcatHead
-    ConcatHead --> ProjMLP
-    ProjMLP --> LLM
+    TrajTokens --> TrajProj --> ConcatHead
+    ConcatHead --> LLM
 
     Prompt --> QF
     Prompt --> LLM
     LLM --> Answer
 ```
+
+Sơ đồ thể hiện phụ thuộc dữ liệu; runtime thực thi các bước tuần tự. Tracker và mã hóa ảnh cập nhật ở mỗi frame, còn Q-Former, Tracking Encoder, Fusion và LLM chạy khi có yêu cầu sinh hướng dẫn. Tracking Encoder nhận thuộc tính vật thể hiện tại; thông tin thời gian đến từ trạng thái tracker. Thứ tự slot vật thể có thể thay đổi theo từng frame.
+
+Ở selective frame, STC_Cacher so sánh key tại cùng vị trí patch với reference của cùng lớp. Reference không bị ghi đè bởi kết quả selective và được làm mới theo chu kỳ hoặc khi khởi tạo lại trạng thái. Hướng dẫn chi tiết về cơ chế, kích thước tensor và giới hạn thực nghiệm được trình bày trong [báo cáo kiến trúc](BAO_CAO_KIEN_TRUC_NOTION.md).

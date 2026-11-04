@@ -29,6 +29,7 @@ from transformers import AutoModel, AutoTokenizer, GenerationConfig, GenerationM
 from peft import LoraConfig, PeftModel
 
 from logutil import init_logger
+from pipeline_timing import stage_scope
 from Tracking_Encoder.trajectory_branch import TrajectoryBackbone, TrajectoryConcatHead
 
 ROOT = Path(__file__).resolve().parent
@@ -203,7 +204,7 @@ def load_models():
 
     import torch
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device(DEVICE)
     print(device)
 
     # AutoModel loads InternLM2 support from the official base repository.
@@ -245,7 +246,7 @@ def load_models():
 
 
 @torch.inference_mode()
-def generate_guidance(model_bundle, tracking_bundle, visual_tokens, tracking_inputs):
+def generate_guidance(model_bundle, tracking_bundle, visual_tokens, tracking_inputs, *, timings=None, details=None):
     """Generate from the latest frame using already loaded model instances."""
     from MLP_LLM.conversation import get_conv_template
     model, tokenizer, qformer, queries, qtokenizer, projections = model_bundle
@@ -253,47 +254,57 @@ def generate_guidance(model_bundle, tracking_bundle, visual_tokens, tracking_inp
     label_ids, direction_ids, numeric_features, object_mask = tracking_inputs
 
     # 4. PROMPT-AWARE Q-FORMER: the checkpoint configuration requires text here.
-    visual_input = projections["qformer_input_proj"](visual_tokens.float()).to(DTYPE)
-    qtext = qtokenizer(PROMPT, return_tensors="pt", truncation=True, max_length=128).to(DEVICE)
-    query_mask = torch.ones((1, 32), dtype=torch.long, device=DEVICE)
-    compressed = qformer(
-        input_ids=qtext.input_ids, query_embeds=queries,
-        attention_mask=torch.cat([query_mask, qtext.attention_mask], dim=1),
-        encoder_hidden_states=visual_input,
-        encoder_attention_mask=torch.ones((1, 256), dtype=torch.long, device=DEVICE),
-        return_dict=True,
-    ).last_hidden_state[:, :32]
-    visual_tokens = projections["qformer_to_mlp1_proj"](compressed.float())
-    visual_tokens = model.mlp1(visual_tokens.to(DTYPE))  # [1,32,2048]
+    with stage_scope(timings, "qformer_visual_projection"):
+        visual_input = projections["qformer_input_proj"](visual_tokens.float()).to(DTYPE)
+        qtext = qtokenizer(PROMPT, return_tensors="pt", truncation=True, max_length=128).to(DEVICE)
+        query_mask = torch.ones((1, 32), dtype=torch.long, device=DEVICE)
+        compressed = qformer(
+            input_ids=qtext.input_ids, query_embeds=queries,
+            attention_mask=torch.cat([query_mask, qtext.attention_mask], dim=1),
+            encoder_hidden_states=visual_input,
+            encoder_attention_mask=torch.ones((1, 256), dtype=torch.long, device=DEVICE),
+            return_dict=True,
+        ).last_hidden_state[:, :32]
+        visual_tokens = projections["qformer_to_mlp1_proj"](compressed.float())
+        visual_tokens = model.mlp1(visual_tokens.to(DTYPE))  # [1,32,2048]
 
     # 5. TRACKING ENCODER: [1,6,384] -> trained projector -> [1,6,2048].
-    trajectory_tokens = tracking_encoder(label_ids, direction_ids, numeric_features, object_mask)
-    trajectory_tokens = trajectory_projection(trajectory_tokens) * object_mask.unsqueeze(-1)
+    with stage_scope(timings, "tracking_encoder"):
+        trajectory_tokens = tracking_encoder(label_ids, direction_ids, numeric_features, object_mask)
+        trajectory_tokens = trajectory_projection(trajectory_tokens) * object_mask.unsqueeze(-1)
 
     # 6. CHECKPOINT FUSION: concatenate AFTER the visual MLP, matching training.
     # Both branches already have the LLM width: [1,32,2048] + [1,6,2048].
-    fused_tokens = torch.cat([visual_tokens, trajectory_tokens.to(DTYPE)], dim=1)
+    with stage_scope(timings, "fusion_prompt"):
+        fused_tokens = torch.cat([visual_tokens, trajectory_tokens.to(DTYPE)], dim=1)
 
-    # 7. LLM INPUT: use the InternLM conversation template and checkpoint tokenizer.
-    template = get_conv_template(model.template)
-    template.system_message = "You are a navigation assistant for visually impaired users."
-    template.append_message(template.roles[0], "<img>" + "<IMG_CONTEXT>" * 38 + "</img>\n" + PROMPT)
-    template.append_message(template.roles[1], None)
-    text = tokenizer(template.get_prompt(), return_tensors="pt").to(DEVICE)
-    embeddings = model.language_model.get_input_embeddings()(text.input_ids)
-    image_positions = text.input_ids == tokenizer.convert_tokens_to_ids("<IMG_CONTEXT>")
-    embeddings[image_positions] = fused_tokens.reshape(38, 2048).to(embeddings)
+        # 7. LLM INPUT: use the InternLM conversation template and checkpoint tokenizer.
+        template = get_conv_template(model.template)
+        template.system_message = "You are a navigation assistant for visually impaired users."
+        template.append_message(template.roles[0], "<img>" + "<IMG_CONTEXT>" * 38 + "</img>\n" + PROMPT)
+        template.append_message(template.roles[1], None)
+        text = tokenizer(template.get_prompt(), return_tensors="pt").to(DEVICE)
+        embeddings = model.language_model.get_input_embeddings()(text.input_ids)
+        image_positions = text.input_ids == tokenizer.convert_tokens_to_ids("<IMG_CONTEXT>")
+        embeddings[image_positions] = fused_tokens.reshape(38, 2048).to(embeddings)
     # Match the supplied training/inference bridge: zero padded features remain
     # placeholder positions in the LLM; padding is masked inside the set encoder.
 
     # 8. OUTPUT: the language model now runs with the checkpoint's LoRA adapter.
-    stop_id = tokenizer.convert_tokens_to_ids(template.sep)
-    output_ids = model.language_model.generate(
-        inputs_embeds=embeddings, attention_mask=text.attention_mask,
-        max_new_tokens=128, do_sample=False, use_cache=True,
-        eos_token_id=stop_id, pad_token_id=stop_id,
-    )
-    answer = tokenizer.decode(output_ids[0], skip_special_tokens=True).split(template.sep)[0].strip()
+    with stage_scope(timings, "llm_generate"):
+        stop_id = tokenizer.convert_tokens_to_ids(template.sep)
+        output_ids = model.language_model.generate(
+            inputs_embeds=embeddings, attention_mask=text.attention_mask,
+            max_new_tokens=128, do_sample=False, use_cache=True,
+            eos_token_id=stop_id, pad_token_id=stop_id,
+        )
+    with stage_scope(timings, "text_decode"):
+        answer = tokenizer.decode(output_ids[0], skip_special_tokens=True).split(template.sep)[0].strip()
+    if details is not None:
+        # Count the returned IDs, including special tokens; do not retokenize text
+        # and call that the model's generated-token count.
+        details.update(returned_output_tokens=int(output_ids[0].numel()),
+                       prompt_tokens=int(text.input_ids.shape[-1]), max_new_tokens=128)
     return answer
 
 

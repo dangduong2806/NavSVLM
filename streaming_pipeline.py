@@ -18,6 +18,8 @@ import numpy as np
 from PIL import Image
 import torch
 
+from pipeline_timing import stage_scope
+
 
 class StreamingPipeline:
     def __init__(self, backend=None):
@@ -25,6 +27,7 @@ class StreamingPipeline:
             import main as backend
         self.backend = backend
         self._lock = threading.RLock()
+        self.stage_timings = None  # Only enabled by the separate diagnostic pass.
         (backend.CACHE_DIR / "ultralytics").mkdir(parents=True, exist_ok=True)
         os.environ["YOLO_CONFIG_DIR"] = str(backend.CACHE_DIR / "ultralytics")
         os.environ["YOLO_AUTOINSTALL"] = "false"
@@ -57,14 +60,18 @@ class StreamingPipeline:
             self._last_frame_id = None
             self._visual_tokens = None
             self._tracking_inputs = None
+            self.last_generation = None
 
     def _encode_frame(self, frame):
         from Concat_Q_Former.qformer_bridge import _extract_vit_tokens
 
-        image = Image.fromarray(frame).resize((448, 448), Image.Resampling.BICUBIC)
-        pixels = torch.from_numpy(np.array(image, dtype=np.float32) / 255)
-        pixels = pixels.permute(2, 0, 1).unsqueeze(0).to(self.backend.DEVICE)
-        return _extract_vit_tokens(self.model_bundle[0], ((pixels - self.mean) / self.std).to(self.backend.DTYPE))
+        with stage_scope(self.stage_timings, "vision_preprocess"):
+            image = Image.fromarray(frame).resize((448, 448), Image.Resampling.BICUBIC)
+            pixels = torch.from_numpy(np.array(image, dtype=np.float32) / 255)
+            pixels = pixels.permute(2, 0, 1).unsqueeze(0).to(self.backend.DEVICE)
+            pixels = ((pixels - self.mean) / self.std).to(self.backend.DTYPE)
+        with stage_scope(self.stage_timings, "vision_encode"):
+            return _extract_vit_tokens(self.model_bundle[0], pixels)
 
     @torch.inference_mode()
     def process_frame(self, frame, *, stream_id="default", frame_id=None, generate=False):
@@ -86,16 +93,19 @@ class StreamingPipeline:
             if frame_id is not None and self._last_frame_id is not None and frame_id <= self._last_frame_id:
                 raise ValueError("frame_id must increase; reset_stream before replay or seek")
             try:
-                self._tracking_inputs = self.backend.track_objects(
-                    [frame], self.label_vocab, self.direction_vocab,
-                    detector=self.detector, tracker_path=self.tracker_path,
-                )
+                self.last_generation = None
+                with stage_scope(self.stage_timings, "yolo_tracking"):
+                    self._tracking_inputs = self.backend.track_objects(
+                        [frame], self.label_vocab, self.direction_vocab,
+                        detector=self.detector, tracker_path=self.tracker_path,
+                    )
                 self._visual_tokens = self._encode_frame(frame)
                 self._shape = frame.shape
                 self._last_frame_id = frame_id if frame_id is not None else self._last_frame_id
                 self.frame_index += 1
                 answer = self.generate_guidance() if generate else None
                 return {"frame_index": self.frame_index, "answer": answer,
+                        "generation": self.last_generation,
                         "stc_mode": self.stc_cache.last_mode if self.stc_cache is not None else "disabled"}
             except Exception:
                 # A failed frame may have advanced one branch but not the other.
@@ -108,9 +118,13 @@ class StreamingPipeline:
         with self._lock:
             if self._visual_tokens is None:
                 raise ValueError("Process a frame before requesting guidance")
-            return self.backend.generate_guidance(
+            details = {}
+            answer = self.backend.generate_guidance(
                 self.model_bundle, self.tracking_bundle, self._visual_tokens, self._tracking_inputs,
+                timings=self.stage_timings, details=details,
             )
+            self.last_generation = details
+            return answer
 
     def run_directory(self, images_dir, *, limit=9, on_progress=None):
         """Replay a directory as a NEW video, reusing all loaded models."""

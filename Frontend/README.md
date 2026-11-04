@@ -116,3 +116,38 @@ Runtime lifecycle checks with fake models (run manually):
 ```powershell
 python -m unittest discover -s tests -p "test_streaming_pipeline.py" -v
 ```
+
+## Full backend benchmark
+
+`benchmark_stc.py` measures InternViT plus pixel shuffle. To compare the complete
+navigation backend, stop the frontend worker and run from the repository root:
+
+```powershell
+python benchmark_system.py --images-dir wad_sample/images --device cpu --profile-stages
+```
+
+Use `--device cuda:0` for CUDA. Dtype defaults to the pipeline's choice: FP32 on
+CPU, BF16 on CUDA; override with `--dtype` if needed. Hugging Face stays offline
+unless `--online` is supplied. No STC environment setting is needed: the script
+switches between baseline and STC automatically while retaining the same models.
+
+The output is `outputs/system_benchmark.json` and `.md`. It records model loading
+separately, warms both modes, resets tracking/cache between sequences and
+alternates the measurement order. Both modes process every frame through vision
+and tracking, using the same guidance schedule. The default is 9 JPGs, 3 repeats,
+guidance every 9 frames plus the final frame. The optional stage diagnostic is a
+separate pass covering image decoding, tracking, preprocessing, vision, Q-Former,
+tracking encoder, fusion/prompt preparation, LLM generation and text decoding.
+HTTP/browser rendering and speech playback are outside the measured backend.
+
+With 9 frames and cache interval 4, the final frame is a reference frame. To
+compare answers on selective frames too, generate on frames 4, 8 and 9:
+
+```powershell
+python benchmark_system.py --images-dir wad_sample/images --guidance-every 4 --profile-stages --output outputs/system_selective_guidance.json
+```
+
+This is a different workload, so compare modes within each report. Returned
+token counts and baseline/STC texts are saved to help interpret LLM latency.
+Matching text is agreement with baseline, not a ground-truth navigation score.
+This benchmark does not replace the selective-100% validation in `benchmark_stc.py`.
